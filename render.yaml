@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: clicks-uk-returns
+    runtime: python
+    buildCommand: echo "No build step needed"
+    startCommand: python uk_returns_dashboard.py
+    envVars:
+      - key: GORGIAS_SUBDOMAIN
+        sync: false
+      - key: GORGIAS_API_KEY
+        sync: false
+      - key: GORGIAS_EMAIL
+        sync: false
+      - key: TRACK17_API_KEY
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
