@@ -2242,8 +2242,9 @@ def main():
         print("=" * 60 + "\n")
         return
 
-    # Auto-install OCR if missing
-    ensure_ocr_deps()
+    # Auto-install OCR if missing (skip on Render — no tesseract binary)
+    if not os.environ.get("RENDER"):
+        ensure_ocr_deps()
 
     HOST = os.environ.get("HOST", "0.0.0.0")
     socketserver.TCPServer.allow_reuse_address = True
