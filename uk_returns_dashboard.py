@@ -2175,6 +2175,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 "channel": "internal-note",
                 "via": "api",
                 "source": {"type": "internal-note", "from": {"name": "UK Returns Dashboard"}},
+                "sender": {"email": GORGIAS_EMAIL},
                 "body_html": note_body,
             })
 
