@@ -728,9 +728,72 @@ def extract_text_from_image(url):
     return {"barcodes": [], "ocr_text": best_text}
 
 
+# Blocked attachment IDs/names — Clicks email signature images
+BLOCKED_IMAGE_NAMES = {
+    "inline-622608203",  # Clicks logo signature
+}
+
+# Patterns to filter out signature/logo/marketing images
+SIGNATURE_IMAGE_FILTERS = [
+    # Common signature/logo filenames
+    r'(?i)logo',
+    r'(?i)signature',
+    r'(?i)banner',
+    r'(?i)footer',
+    r'(?i)email[-_]?header',
+    r'(?i)social[-_]?icon',
+    r'(?i)facebook|twitter|instagram|linkedin|tiktok|youtube',
+    # Tracking pixel / tiny images
+    r'(?i)pixel',
+    r'(?i)spacer',
+    r'(?i)beacon',
+    # Common email marketing platforms
+    r'(?i)mailchimp|sendgrid|klaviyo|hubspot|constantcontact',
+    # Clicks brand signature
+    r'(?i)clicks[-_]?logo',
+    r'(?i)clicks[-_]?sig',
+]
+
+# URLs from email signature / marketing services
+SIGNATURE_URL_FILTERS = [
+    r'(?i)ci\d+\.googleusercontent\.com',  # Google profile pics in signatures
+    r'(?i)cdn\.shopify\.com/.*logo',
+    r'(?i)static.*signature',
+    r'(?i)media\.clicks\.tech/.*logo',
+    r'(?i)clicks\.tech/.*logo',
+]
+
+
+def _is_signature_image(url, name):
+    """Return True if this looks like a signature/logo image, not ticket content."""
+    # Check against blocked names/IDs
+    if name in BLOCKED_IMAGE_NAMES:
+        return True
+    # Also check if the blocked ID appears in the URL
+    for blocked in BLOCKED_IMAGE_NAMES:
+        if blocked in url:
+            return True
+    check_str = f"{url} {name}"
+    for pattern in SIGNATURE_IMAGE_FILTERS:
+        if re.search(pattern, check_str):
+            return True
+    for pattern in SIGNATURE_URL_FILTERS:
+        if re.search(pattern, url):
+            return True
+    return False
+
+
 def extract_images_from_message(msg):
     """Extract image URLs from message attachments and inline HTML images."""
     images = []
+
+    # Check if the image is inside an HTML signature block
+    html = msg.get("body_html", "") or ""
+    # Extract URLs that appear inside signature-like HTML sections
+    sig_urls = set()
+    for sig_match in re.finditer(r'(?i)(<div[^>]*(?:class|id)[^>]*(?:signature|sig-block|email-sig)[^>]*>.*?</div>)', html, re.DOTALL):
+        for img_url in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', sig_match.group()):
+            sig_urls.add(img_url)
 
     # Check attachments
     for att in (msg.get("attachments") or []):
@@ -741,13 +804,15 @@ def extract_images_from_message(msg):
             if url and (content_type.startswith("image/") or
                         re.search(r'\.(jpg|jpeg|png|gif|webp|heic)(\?|$)', url, re.IGNORECASE) or
                         re.search(r'\.(jpg|jpeg|png|gif|webp|heic)$', name, re.IGNORECASE)):
-                images.append({"url": url, "name": name, "type": content_type})
+                if not _is_signature_image(url, name) and url not in sig_urls:
+                    images.append({"url": url, "name": name, "type": content_type})
 
     # Check inline images in HTML body
-    html = msg.get("body_html", "") or ""
     for match in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html):
         if match.startswith("http") and match not in [i["url"] for i in images]:
-            images.append({"url": match, "name": os.path.basename(match.split("?")[0]), "type": "image"})
+            basename = os.path.basename(match.split("?")[0])
+            if not _is_signature_image(match, basename) and match not in sig_urls:
+                images.append({"url": match, "name": basename, "type": "image"})
 
     return images
 
@@ -859,7 +924,8 @@ def enrich_with_messages(ticket_summary):
 
             # Extract images from this message
             msg_images = extract_images_from_message(msg)
-            all_images.extend(msg_images)
+            for img in msg_images:
+                all_images.append(img)
 
             # Find tracking numbers in text
             for p in TRACKING_PATTERNS:
