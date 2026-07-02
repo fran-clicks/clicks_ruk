@@ -43,22 +43,22 @@ except ImportError:
 BARCODE_AVAILABLE = False
 
 # ─── CONFIGURATION ───────────────────────────────────────────────────────────
-GORGIAS_SUBDOMAIN = os.environ.get("GORGIAS_SUBDOMAIN", "clicks")  # e.g. "clickstech"
-GORGIAS_API_KEY = os.environ.get("GORGIAS_API_KEY", "267775d052d96ac4583e41f3bc46370cdd4518958f90d236af068410d1361e38")
-GORGIAS_EMAIL = os.environ.get("GORGIAS_EMAIL", "kp@clicks.tech")  # email associated with the API key
+GORGIAS_SUBDOMAIN = os.environ.get("GORGIAS_SUBDOMAIN", "")
+GORGIAS_API_KEY = os.environ.get("GORGIAS_API_KEY", "")
+GORGIAS_EMAIL = os.environ.get("GORGIAS_EMAIL", "")
 PORT = int(os.environ.get("PORT", os.environ.get("DASHBOARD_PORT", "5050")))
 TAG_FILTER = "uk return"
 
 # 17track — primary tracking provider (100 registrations/month, unlimited queries)
 # Sign up free at: https://api.17track.net → get API key from Settings
-TRACK17_API_KEY = os.environ.get("TRACK17_API_KEY", "E8F71A5DE9760A22746CC1324F2A24A3")
+TRACK17_API_KEY = os.environ.get("TRACK17_API_KEY", "")
 
 # ParcelsApp tracking — fallback (10 shipments/month)
 # Get your API key at: https://parcelsapp.com/dashboard
 PARCELSAPP_API_KEY = os.environ.get("PARCELSAPP_API_KEY", "")
 
 # Dashboard authentication — shared team password
-DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "clicks2024")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Session store: {token: expiry_timestamp}
