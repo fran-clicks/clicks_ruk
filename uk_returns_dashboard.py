@@ -525,6 +525,15 @@ def get_cached_tickets(force_refresh=False):
     return {"tickets": _cache["enriched"], "error": None, "cached": True, "loading": not _cache["enriched"]}
 
 
+# Return timeline stages — order matters, each triggered by a Gorgias tag
+RETURN_TIMELINE_STAGES = [
+    {"key": "initiated", "label": "Initiated", "tag": "return initiated"},
+    {"key": "sent", "label": "Sent", "tag": "return sent"},
+    {"key": "received", "label": "Received", "tag": "return received"},
+    {"key": "inspected", "label": "Inspected", "tag": "return inspected"},
+    {"key": "processed", "label": "Processed", "tag": "return processed"},
+]
+
 # Order number pattern: CT followed by alphanumeric characters
 ORDER_PATTERN = r'\b(CT[A-Za-z0-9]{2,20})\b'
 
@@ -588,6 +597,16 @@ def extract_ticket_details(ticket):
                 if isinstance(v, str):
                     order_numbers.update(re.findall(ORDER_PATTERN, v, re.IGNORECASE))
 
+    # Compute return timeline from tags
+    tags_lower = [t.lower() for t in tags]
+    timeline = []
+    for stage in RETURN_TIMELINE_STAGES:
+        timeline.append({
+            "key": stage["key"],
+            "label": stage["label"],
+            "done": stage["tag"] in tags_lower,
+        })
+
     return {
         "id": ticket_id,
         "subject": subject,
@@ -603,6 +622,7 @@ def extract_ticket_details(ticket):
         "order_numbers": list(order_numbers),
         "tracking_numbers": [],
         "device_info": [],
+        "timeline": timeline,
         "messages_count": 0,
         "full_text": "",
         "gorgias_url": f"https://{GORGIAS_SUBDOMAIN}.gorgias.com/app/ticket/{ticket_id}",
@@ -1285,7 +1305,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     cursor: pointer;
     transition: all 0.15s;
     display: grid;
-    grid-template-columns: 80px 1fr 120px 160px 160px 120px 120px 100px;
+    grid-template-columns: 80px 1fr 120px 160px 100px 160px 120px 120px 100px;
     align-items: center;
     gap: 16px;
   }
@@ -1568,6 +1588,80 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     vertical-align: middle;
     margin-right: 6px;
   }
+  /* Return timeline */
+  .timeline {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    width: 100%;
+  }
+  .timeline-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 1;
+    position: relative;
+  }
+  .timeline-dot {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--border);
+    border: 2px solid var(--border);
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: transparent;
+    transition: all 0.3s;
+  }
+  .timeline-dot.done {
+    background: var(--green);
+    border-color: var(--green);
+    color: white;
+  }
+  .timeline-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 6px;
+    text-align: center;
+    white-space: nowrap;
+  }
+  .timeline-label.done { color: var(--green); font-weight: 600; }
+  .timeline-line {
+    position: absolute;
+    top: 11px;
+    left: 50%;
+    width: 100%;
+    height: 2px;
+    background: var(--border);
+    z-index: 1;
+  }
+  .timeline-line.done { background: var(--green); }
+  .timeline-step:last-child .timeline-line { display: none; }
+
+  /* Compact timeline for ticket list rows */
+  .timeline-compact {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+  }
+  .timeline-pip {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border);
+    transition: all 0.2s;
+  }
+  .timeline-pip.done { background: var(--green); }
+  .timeline-pip-line {
+    width: 6px;
+    height: 2px;
+    background: var(--border);
+  }
+  .timeline-pip-line.done { background: var(--green); }
+
   /* Image lightbox */
   .lightbox {
     display: none;
@@ -1617,8 +1711,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .ticket-row {
       grid-template-columns: 70px 1fr 100px;
     }
-    .ticket-customer, .ticket-date, .ticket-assignee, .ticket-product { display: none; }
-    .col-headers div:nth-child(n+4):nth-child(-n+7) { display: none; }
+    .ticket-customer, .ticket-date, .ticket-assignee, .ticket-product, .timeline-compact { display: none; }
+    .col-headers div:nth-child(n+4):nth-child(-n+8) { display: none; }
     .detail-panel { width: 100%; }
   }
 </style>
@@ -1663,7 +1757,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div>Loading UK return tickets from Gorgias...</div>
   </div>
   <div id="colHeaders" class="ticket-row col-headers" style="display:none">
-    <div>ID</div><div>Subject</div><div>Order</div><div>Product</div><div>Customer</div><div>Updated</div><div>Assignee</div><div>Status</div>
+    <div>ID</div><div>Subject</div><div>Order</div><div>Product</div><div>Progress</div><div>Customer</div><div>Updated</div><div>Assignee</div><div>Status</div>
   </div>
   <div id="ticketList" class="ticket-list" style="display:none"></div>
   <div id="emptyState" class="empty-state" style="display:none">
@@ -1807,6 +1901,13 @@ function filterTickets() {
       <div class="ticket-subject">${esc(t.subject)}</div>
       <div class="ticket-id" style="font-size:12px">${(t.order_numbers||[]).join(', ') || '-'}</div>
       <div class="ticket-product">${(t.device_info||[]).map(d => esc(d)).join(', ') || '-'}</div>
+      <div class="timeline-compact" title="${(t.timeline||[]).filter(s=>s.done).map(s=>s.label).join(' → ') || 'No progress'}">
+        ${(t.timeline||[]).map((s,i) => {
+          const pip = '<span class="timeline-pip' + (s.done ? ' done' : '') + '" title="' + esc(s.label) + '"></span>';
+          const line = i < (t.timeline||[]).length - 1 ? '<span class="timeline-pip-line' + (s.done && (t.timeline||[])[i+1]?.done ? ' done' : '') + '"></span>' : '';
+          return pip + line;
+        }).join('')}
+      </div>
       <div class="ticket-customer">${esc(t.customer_name)}</div>
       <div class="ticket-date">${formatDate(t.updated)}</div>
       <div class="ticket-assignee">${esc(t.assignee || 'Unassigned')}</div>
@@ -1853,6 +1954,19 @@ function openDetail(id) {
     <div class="detail-header">
       <h2>${esc(t.subject)}</h2>
       <span class="status-badge status-${t.status}">${t.status}</span>
+    </div>
+
+    <div class="detail-section">
+      <h3>Return Progress</h3>
+      <div class="timeline">
+        ${(t.timeline||[]).map((s, i) => `
+          <div class="timeline-step">
+            ${i < (t.timeline||[]).length - 1 ? '<div class="timeline-line' + (s.done && (t.timeline||[])[i+1]?.done ? ' done' : '') + '"></div>' : ''}
+            <div class="timeline-dot${s.done ? ' done' : ''}">${s.done ? '&#10003;' : ''}</div>
+            <div class="timeline-label${s.done ? ' done' : ''}">${esc(s.label)}</div>
+          </div>
+        `).join('')}
+      </div>
     </div>
 
     <div class="detail-section">
