@@ -474,22 +474,18 @@ def fetch_all_tagged_tickets():
     return {"tickets": all_tickets, "error": None}
 
 
-def get_cached_tickets(force_refresh=False):
-    """Return cached enriched tickets, refreshing if stale."""
-    now = time.time()
-    if not force_refresh and _cache["enriched"] and (now - _cache["timestamp"]) < CACHE_TTL:
-        return {"tickets": _cache["enriched"], "error": None, "cached": True}
-
+def _background_fetch():
+    """Fetch and enrich tickets in background thread."""
     if _cache["loading"]:
-        # Another request is already loading — return whatever we have
-        return {"tickets": _cache["enriched"], "error": None, "cached": True, "loading": True}
-
+        return  # already running
     _cache["loading"] = True
     try:
+        print("[Fetch] Starting ticket fetch from Gorgias...")
         result = fetch_all_tagged_tickets()
         if result.get("error") and not result.get("tickets"):
-            _cache["loading"] = False
-            return result
+            _cache["error"] = result.get("error")
+            print(f"[Fetch] Error: {_cache['error']}")
+            return
 
         enriched = []
         total = len(result["tickets"])
@@ -499,16 +495,34 @@ def get_cached_tickets(force_refresh=False):
             summary = enrich_with_messages(summary)
             enriched.append(summary)
             if i < total - 1:
-                time.sleep(0.5)  # light throttle for message fetches
+                time.sleep(0.5)
 
         _cache["enriched"] = enriched
         _cache["timestamp"] = time.time()
         _cache["error"] = None
-        return {"tickets": enriched, "error": None, "cached": False}
+        print(f"[Fetch] Done — {len(enriched)} tickets loaded")
     except Exception as e:
-        return {"error": str(e), "tickets": _cache["enriched"]}
+        _cache["error"] = str(e)
+        print(f"[Fetch] Exception: {e}")
     finally:
         _cache["loading"] = False
+
+
+def get_cached_tickets(force_refresh=False):
+    """Return cached tickets immediately. Triggers background refresh if stale."""
+    now = time.time()
+    cache_valid = _cache["enriched"] and (now - _cache["timestamp"]) < CACHE_TTL
+
+    if not force_refresh and cache_valid:
+        return {"tickets": _cache["enriched"], "error": None, "cached": True}
+
+    # If loading, return whatever we have now
+    if _cache["loading"]:
+        return {"tickets": _cache["enriched"], "error": None, "cached": True, "loading": True}
+
+    # Trigger background fetch, return immediately
+    threading.Thread(target=_background_fetch, daemon=True).start()
+    return {"tickets": _cache["enriched"], "error": None, "cached": True, "loading": not _cache["enriched"]}
 
 
 # Order number pattern: CT followed by alphanumeric characters
@@ -2271,8 +2285,11 @@ def main():
             print(f"[Prefetch] Error: {e}")
     threading.Thread(target=_prefetch, daemon=True).start()
 
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer((HOST, PORT), DashboardHandler) as httpd:
+    class ThreadedServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    with ThreadedServer((HOST, PORT), DashboardHandler) as httpd:
         print(f"\n{'=' * 60}")
         print(f"  Clicks UK Returns Dashboard")
         print(f"  Running at: http://localhost:{PORT}")
