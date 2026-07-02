@@ -1637,11 +1637,24 @@ async function loadTickets() {
       return;
     }
 
+    // If server is still loading tickets in background, auto-retry
+    if (data.loading && (!data.tickets || data.tickets.length === 0)) {
+      loading.querySelector('div:last-child').textContent = 'Server is fetching tickets from Gorgias... retrying in 5s';
+      setTimeout(() => loadTickets(), 5000);
+      return;
+    }
+
     allTickets = data.tickets || [];
     updateStats();
     filterTickets();
     document.getElementById('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (e) {
+    // If response wasn't JSON (e.g. proxy timeout), auto-retry
+    if (e.message && e.message.includes('pattern')) {
+      loading.querySelector('div:last-child').textContent = 'Server is starting up... retrying in 5s';
+      setTimeout(() => loadTickets(), 5000);
+      return;
+    }
     errBanner.textContent = 'Connection error: ' + e.message;
     errBanner.style.display = 'block';
   }
@@ -2247,6 +2260,17 @@ def main():
         ensure_ocr_deps()
 
     HOST = os.environ.get("HOST", "0.0.0.0")
+
+    # Pre-fetch tickets in background so first page load is instant
+    def _prefetch():
+        print("[Prefetch] Loading tickets from Gorgias in background...")
+        try:
+            get_cached_tickets(force_refresh=True)
+            print(f"[Prefetch] Done — {len(_cache['enriched'])} tickets loaded")
+        except Exception as e:
+            print(f"[Prefetch] Error: {e}")
+    threading.Thread(target=_prefetch, daemon=True).start()
+
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer((HOST, PORT), DashboardHandler) as httpd:
         print(f"\n{'=' * 60}")
