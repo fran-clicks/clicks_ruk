@@ -1448,6 +1448,34 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .tab-content { display: none; }
   .tab-content.active { display: block; }
 
+  /* Analytics tab */
+  .ana-period-btn {
+    padding: 4px 10px; font-size: 12px; border: 1px solid var(--border); background: transparent;
+    color: var(--text-dim); border-radius: 4px; cursor: pointer; transition: all 0.2s;
+  }
+  .ana-period-btn:hover { color: var(--text); border-color: var(--accent); }
+  .ana-period-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .ana-bar {
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-end; min-width: 28px; flex: 1;
+  }
+  .ana-bar-fill {
+    width: 100%; max-width: 36px; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; transition: height 0.3s;
+  }
+  .ana-bar-label { font-size: 9px; color: var(--text-dim); margin-top: 4px; white-space: nowrap; }
+  .ana-bar-count { font-size: 10px; color: var(--text); margin-bottom: 2px; }
+  .ana-reason-row {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  }
+  .ana-reason-bar { flex: 1; height: 22px; background: var(--border); border-radius: 4px; overflow: hidden; position: relative; }
+  .ana-reason-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width 0.3s; }
+  .ana-reason-label { font-size: 12px; color: var(--text); min-width: 100px; }
+  .ana-reason-count { font-size: 12px; color: var(--text-dim); min-width: 30px; text-align: right; }
+  .ana-stage-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .ana-stage-label { font-size: 13px; color: var(--text); min-width: 90px; }
+  .ana-stage-bar { flex: 1; height: 20px; background: var(--border); border-radius: 4px; overflow: hidden; }
+  .ana-stage-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+  .ana-stage-count { font-size: 12px; color: var(--text-dim); min-width: 30px; text-align: right; }
+
   /* Stock tab */
   .stock-summary {
     display: flex;
@@ -2136,6 +2164,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div class="tab-bar">
   <button class="tab-btn active" onclick="switchTab('returns',this)">UK Returns</button>
   <button class="tab-btn" onclick="switchTab('stock',this)">UK Stock</button>
+  <button class="tab-btn" onclick="switchTab('analytics',this)">Analytics</button>
 </div>
 
 <!-- === RETURNS TAB === -->
@@ -2222,6 +2251,51 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 </div><!-- end tab-stock -->
 
+<!-- === ANALYTICS TAB === -->
+<div id="tab-analytics" class="tab-content">
+  <div class="stats-bar" id="analyticsStats">
+    <div class="stat-card total"><div class="label">Avg Return Value</div><div class="value" id="anaAvgValue">-</div></div>
+    <div class="stat-card open"><div class="label">Avg Days to Refund</div><div class="value" id="anaAvgDays">-</div></div>
+    <div class="stat-card pending"><div class="label">Initiated</div><div class="value" id="anaInitiated">-</div></div>
+    <div class="stat-card closed"><div class="label">Processed</div><div class="value" id="anaProcessed">-</div></div>
+  </div>
+
+  <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px">
+    <!-- Returns Over Time -->
+    <div style="flex:2;min-width:320px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0;font-size:14px;color:var(--text)">Returns Over Time</h3>
+        <div style="display:flex;gap:4px">
+          <button class="ana-period-btn active" onclick="setAnaPeriod('daily',this)">Daily</button>
+          <button class="ana-period-btn" onclick="setAnaPeriod('weekly',this)">Weekly</button>
+          <button class="ana-period-btn" onclick="setAnaPeriod('monthly',this)">Monthly</button>
+        </div>
+      </div>
+      <div id="anaChart" style="height:220px;overflow-x:auto;display:flex;align-items:flex-end;gap:2px"></div>
+    </div>
+
+    <!-- Return Reasons -->
+    <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
+      <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Top Return Reasons</h3>
+      <div id="anaReasons"></div>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px">
+    <!-- Stage Breakdown -->
+    <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
+      <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Returns by Stage</h3>
+      <div id="anaStages"></div>
+    </div>
+
+    <!-- Warranty Status -->
+    <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
+      <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Warranty Status</h3>
+      <div id="anaWarranty"></div>
+    </div>
+  </div>
+</div><!-- end tab-analytics -->
+
 <!-- Stock Edit Modal -->
 <div class="stock-modal-overlay" id="stockModalOverlay" onclick="if(event.target===this)closeStockModal()">
   <div class="stock-modal">
@@ -2268,11 +2342,13 @@ function switchTab(tab, btn) {
   btn.classList.add('active');
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.add('active');
+  if (tab === 'analytics') renderAnalytics();
 }
 
 function refreshCurrentTab() {
   if (currentTab === 'returns') loadTickets();
-  else loadStock();
+  else if (currentTab === 'stock') loadStock();
+  else if (currentTab === 'analytics') renderAnalytics();
 }
 
 // ============ STOCK MANAGEMENT ============
@@ -3090,6 +3166,130 @@ document.addEventListener('keydown', e => {
     document.getElementById('searchInput').focus();
   }
 });
+
+// ============ ANALYTICS ============
+let anaPeriod = 'daily';
+
+function setAnaPeriod(period, btn) {
+  anaPeriod = period;
+  document.querySelectorAll('.ana-period-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderAnalytics();
+}
+
+function renderAnalytics() {
+  if (!allTickets.length) return;
+
+  // --- Summary stats ---
+  let totalValue = 0, valueCount = 0;
+  let initiatedCount = 0, processedCount = 0;
+  let refundDays = [], reasonMap = {}, stageMap = {}, warrantyMap = {};
+
+  const stages = ['Initiated','Sent','Received','Inspected','Processed'];
+  stages.forEach(s => stageMap[s] = 0);
+
+  allTickets.forEach(t => {
+    // Avg return value
+    const price = parseFloat(t.shopify?.total_price);
+    if (!isNaN(price) && price > 0) { totalValue += price; valueCount++; }
+
+    // Stage counts
+    const tl = t.timeline || [];
+    const currentStage = [...tl].reverse().find(s => s.done);
+    if (currentStage) stageMap[currentStage.label] = (stageMap[currentStage.label] || 0) + 1;
+
+    // Initiated vs Processed
+    if (tl.length && tl[0].done) initiatedCount++;
+    if (tl.length && tl[tl.length - 1].done) processedCount++;
+
+    // Avg days to refund (initiated → processed)
+    if (t.shopify?.financial_status === 'refunded' && t.created) {
+      const created = new Date(t.created);
+      const now = new Date();
+      const days = Math.round((now - created) / 86400000);
+      if (days >= 0 && days < 365) refundDays.push(days);
+    }
+
+    // Return reasons
+    const reason = (t.custom_fields || {})['Return Reason'];
+    if (reason && reason !== '-') reasonMap[reason] = (reasonMap[reason] || 0) + 1;
+
+    // Warranty
+    const warranty = (t.custom_fields || {})['Warranty Result'];
+    if (warranty && warranty !== '-') warrantyMap[warranty] = (warrantyMap[warranty] || 0) + 1;
+  });
+
+  const avgValue = valueCount ? (totalValue / valueCount).toFixed(2) : '-';
+  const avgDays = refundDays.length ? Math.round(refundDays.reduce((a,b) => a+b, 0) / refundDays.length) : '-';
+  const currency = allTickets.find(t => t.shopify?.currency)?.shopify?.currency || 'GBP';
+
+  document.getElementById('anaAvgValue').textContent = avgValue !== '-' ? currency + ' ' + avgValue : '-';
+  document.getElementById('anaAvgDays').textContent = avgDays !== '-' ? avgDays + 'd' : '-';
+  document.getElementById('anaInitiated').textContent = initiatedCount;
+  document.getElementById('anaProcessed').textContent = processedCount;
+
+  // --- Returns Over Time chart ---
+  const buckets = {};
+  allTickets.forEach(t => {
+    if (!t.created) return;
+    const d = new Date(t.created);
+    let key;
+    if (anaPeriod === 'daily') {
+      key = d.toISOString().slice(0, 10);
+    } else if (anaPeriod === 'weekly') {
+      const mon = new Date(d);
+      mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7));
+      key = 'W' + mon.toISOString().slice(5, 10);
+    } else {
+      key = d.toISOString().slice(0, 7);
+    }
+    buckets[key] = (buckets[key] || 0) + 1;
+  });
+  const sortedKeys = Object.keys(buckets).sort();
+  const maxCount = Math.max(...Object.values(buckets), 1);
+  const chartEl = document.getElementById('anaChart');
+  chartEl.innerHTML = sortedKeys.map(k => {
+    const h = Math.max(2, (buckets[k] / maxCount) * 180);
+    const label = anaPeriod === 'monthly' ? k : (anaPeriod === 'weekly' ? k : k.slice(5));
+    return `<div class="ana-bar"><span class="ana-bar-count">${buckets[k]}</span><div class="ana-bar-fill" style="height:${h}px"></div><span class="ana-bar-label">${label}</span></div>`;
+  }).join('');
+
+  // --- Return Reasons ---
+  const reasonEntries = Object.entries(reasonMap).sort((a,b) => b[1] - a[1]).slice(0, 8);
+  const maxReason = reasonEntries.length ? reasonEntries[0][1] : 1;
+  const reasonsEl = document.getElementById('anaReasons');
+  reasonsEl.innerHTML = reasonEntries.length ? reasonEntries.map(([r, c]) =>
+    `<div class="ana-reason-row">
+      <span class="ana-reason-label">${esc(r)}</span>
+      <div class="ana-reason-bar"><div class="ana-reason-fill" style="width:${(c/maxReason)*100}%"></div></div>
+      <span class="ana-reason-count">${c}</span>
+    </div>`
+  ).join('') : '<div style="color:var(--text-dim);font-size:13px">No return reasons recorded</div>';
+
+  // --- Stage Breakdown ---
+  const stageColors = ['#6c5ce7','#a29bfe','#ffc107','#ff7675','#4caf50'];
+  const maxStage = Math.max(...Object.values(stageMap), 1);
+  const stagesEl = document.getElementById('anaStages');
+  stagesEl.innerHTML = stages.map((s, i) =>
+    `<div class="ana-stage-row">
+      <span class="ana-stage-label">${s}</span>
+      <div class="ana-stage-bar"><div class="ana-stage-fill" style="width:${(stageMap[s]/maxStage)*100}%;background:${stageColors[i]}"></div></div>
+      <span class="ana-stage-count">${stageMap[s]}</span>
+    </div>`
+  ).join('');
+
+  // --- Warranty Status ---
+  const warrantyEntries = Object.entries(warrantyMap).sort((a,b) => b[1] - a[1]);
+  const maxWarranty = warrantyEntries.length ? warrantyEntries[0][1] : 1;
+  const warrantyEl = document.getElementById('anaWarranty');
+  warrantyEl.innerHTML = warrantyEntries.length ? warrantyEntries.map(([w, c]) =>
+    `<div class="ana-reason-row">
+      <span class="ana-reason-label">${esc(w)}</span>
+      <div class="ana-reason-bar"><div class="ana-reason-fill" style="width:${(c/maxWarranty)*100}%"></div></div>
+      <span class="ana-reason-count">${c}</span>
+    </div>`
+  ).join('') : '<div style="color:var(--text-dim);font-size:13px">No warranty data recorded</div>';
+}
 
 // Load on start
 loadTickets();
