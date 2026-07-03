@@ -1626,7 +1626,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     cursor: pointer;
     transition: all 0.15s;
     display: grid;
-    grid-template-columns: 80px 1fr 120px 160px 100px 160px 120px 120px 100px;
+    grid-template-columns: 80px 1fr 120px 160px 100px 100px 160px 120px 120px 100px;
     align-items: center;
     gap: 16px;
   }
@@ -2114,7 +2114,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div>Loading UK return tickets from Gorgias...</div>
   </div>
   <div id="colHeaders" class="ticket-row col-headers" style="display:none">
-    <div>ID</div><div>Subject</div><div>Order</div><div>Product</div><div>Progress</div><div>Customer</div><div>Updated</div><div>Assignee</div><div>Status</div>
+    <div>ID</div><div>Subject</div><div>Order</div><div>Product</div><div>Progress</div><div>Purchased</div><div>Customer</div><div>Updated</div><div>Assignee</div><div>Status</div>
   </div>
   <div id="ticketList" class="ticket-list" style="display:none"></div>
   <div id="emptyState" class="empty-state" style="display:none">
@@ -2470,13 +2470,14 @@ function filterTickets() {
       <div class="ticket-subject">${esc(t.subject)}</div>
       <div class="ticket-id" style="font-size:12px">${(t.order_numbers||[]).join(', ') || '-'}</div>
       <div class="ticket-product">${(function(){
-        const di = t.device_info || [];
-        if (di.length) return di.map(d => esc(d)).join(', ');
         const cf = t.custom_fields || {};
         const m = cf['Model'] || cf['model'] || '';
         const c = cf['Colour'] || cf['colour'] || cf['Color'] || cf['color'] || '';
         const p = [m, c].filter(Boolean).join(' - ');
-        return p ? esc(p) : '-';
+        if (p) return esc(p);
+        const di = t.device_info || [];
+        if (di.length) return di.map(d => esc(d)).join(', ');
+        return '-';
       })()}</div>
       <div class="timeline-compact" title="${(t.timeline||[]).filter(s=>s.done).map(s=>s.label).join(' → ') || 'No progress'}">
         ${(t.timeline||[]).map((s,i) => {
@@ -2485,6 +2486,7 @@ function filterTickets() {
           return pip + line;
         }).join('')}
       </div>
+      <div class="ticket-date">${t.shopify?.order_date ? formatDate(t.shopify.order_date) : '-'}</div>
       <div class="ticket-customer">${esc(t.customer_name)}</div>
       <div class="ticket-date">${formatDate(t.updated)}</div>
       <div class="ticket-assignee">${esc(t.assignee || 'Unassigned')}</div>
@@ -2502,18 +2504,12 @@ function openDetail(id) {
     ? t.tracking_numbers.map(n => `<span class="tag">${esc(n)}</span>`).join('')
     : '<span style="color:var(--text-dim)">None detected</span>';
 
-  // Build product info from device_info + custom fields (Model, Colour, Category, Return Reason)
-  let productParts = [...(t.device_info || [])];
+  // Product info: prioritise custom fields (Model, Colour), fall back to text-detected device_info
   const cf = t.custom_fields || {};
   const cfModel = cf['Model'] || cf['model'] || '';
   const cfColour = cf['Colour'] || cf['colour'] || cf['Color'] || cf['color'] || '';
-  if (cfModel || cfColour) {
-    const cfProduct = [cfModel, cfColour].filter(Boolean).join(' - ');
-    // Only add if not already captured by regex
-    if (cfProduct && !productParts.some(p => p.toLowerCase().includes(cfModel.toLowerCase()))) {
-      productParts.unshift(cfProduct);
-    }
-  }
+  const cfProduct = [cfModel, cfColour].filter(Boolean).join(' - ');
+  const productParts = cfProduct ? [cfProduct] : [...(t.device_info || [])];
   const deviceHtml = productParts.length
     ? productParts.map(d => `<span class="tag">${esc(d)}</span>`).join('')
     : '<span style="color:var(--text-dim)">None detected</span>';
