@@ -2173,7 +2173,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div class="stats-bar" id="statsBar">
   <div class="stat-card total"><div class="label">Total Returns</div><div class="value" id="statTotal">-</div></div>
   <div class="stat-card open"><div class="label">Open</div><div class="value" id="statOpen">-</div></div>
-  <div class="stat-card pending"><div class="label">Snoozed</div><div class="value" id="statSnoozed">-</div></div>
   <div class="stat-card closed"><div class="label">Closed</div><div class="value" id="statClosed">-</div></div>
 </div>
 
@@ -2195,7 +2194,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div class="filters" id="filterBar">
   <button class="filter-chip active" data-filter="all" onclick="setFilter('all',this)">All</button>
   <button class="filter-chip" data-filter="open" onclick="setFilter('open',this)">Open</button>
-  <button class="filter-chip" data-filter="snoozed" onclick="setFilter('snoozed',this)">Snoozed</button>
   <button class="filter-chip" data-filter="closed" onclick="setFilter('closed',this)">Closed</button>
 </div>
 
@@ -2550,9 +2548,14 @@ async function loadTickets() {
 
 function updateStats() {
   document.getElementById('statTotal').textContent = allTickets.length;
-  document.getElementById('statOpen').textContent = allTickets.filter(t => t.status === 'open').length;
-  document.getElementById('statSnoozed').textContent = allTickets.filter(t => t.status === 'snoozed').length;
-  document.getElementById('statClosed').textContent = allTickets.filter(t => t.status === 'closed').length;
+  document.getElementById('statOpen').textContent = allTickets.filter(t => {
+    const tags = (t.tags || []).map(tag => tag.toLowerCase());
+    return tags.includes('uk return') && !tags.includes('return processed');
+  }).length;
+  document.getElementById('statClosed').textContent = allTickets.filter(t => {
+    const tags = (t.tags || []).map(tag => tag.toLowerCase());
+    return tags.includes('return processed');
+  }).length;
 }
 
 function setFilter(filter, chip) {
@@ -2570,9 +2573,19 @@ function filterTickets() {
 
   let filtered = allTickets;
 
-  // Status filter
-  if (currentFilter !== 'all') {
-    filtered = filtered.filter(t => t.status === currentFilter);
+  // Visibility filter
+  if (currentFilter === 'open') {
+    // Open = has UK Return tag but NOT processed
+    filtered = filtered.filter(t => {
+      const tags = (t.tags || []).map(tag => tag.toLowerCase());
+      return tags.includes('uk return') && !tags.includes('return processed');
+    });
+  } else if (currentFilter === 'closed') {
+    // Closed = has the Return Processed tag
+    filtered = filtered.filter(t => {
+      const tags = (t.tags || []).map(tag => tag.toLowerCase());
+      return tags.includes('return processed');
+    });
   }
 
   // Search filter
