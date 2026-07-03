@@ -233,6 +233,7 @@ def _track_via_17track(tracking_number):
 
     try:
         # Step 1: Register if not already registered
+        needs_wait = False
         if tracking_number not in _registered_17track:
             reg_payload = [{"number": tracking_number}]
             carrier = _detect_carrier_17track(tracking_number)
@@ -256,6 +257,7 @@ def _track_via_17track(tracking_number):
                 rejected = (reg_result.get("data") or {}).get("rejected") or []
                 if accepted:
                     _registered_17track.add(tracking_number)
+                    needs_wait = True  # newly registered, wait for data
                 elif rejected:
                     err = rejected[0].get("error", {})
                     err_code = err.get("code", 0)
@@ -263,11 +265,13 @@ def _track_via_17track(tracking_number):
                     msg_lower = str(err.get("message", "")).lower()
                     if err_code == -18010012 or "existed" in msg_lower or "registered" in msg_lower or "repeat" in msg_lower:
                         _registered_17track.add(tracking_number)
+                        # Already registered on 17track, no wait needed
                     else:
                         return {"error": f"17track rejected: {err.get('message', 'unknown error')}"}
 
-            # Wait for 17track to fetch data
-            time.sleep(3)
+            # Only wait for newly registered tracking numbers
+            if needs_wait:
+                time.sleep(2)
 
         # Step 2: Get tracking info (free, unlimited)
         query_payload = [{"number": tracking_number}]
@@ -2674,6 +2678,7 @@ async function fetchTrackingAnalysis(ticketId, trackingNumbers) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({tracking: tn}),
       });
+      if (resp.status === 401) { window.location.href = '/login'; return; }
       const data = await resp.json();
 
       if (data.error) {
