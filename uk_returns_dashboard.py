@@ -1361,6 +1361,38 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .search-box input::placeholder { color: var(--text-dim); }
   .search-icon { color: var(--text-dim); font-size: 18px; }
+  .btn-add-ticket {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--accent-light);
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    font-size: 20px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.2s;
+  }
+  .btn-add-ticket:hover { border-color: var(--accent); color: var(--accent); background: rgba(108,92,231,0.1); }
+  .add-ticket-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .add-ticket-row input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+  }
+  .add-ticket-row input:focus { border-color: var(--accent); }
 
   .filters {
     display: flex;
@@ -1576,6 +1608,26 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     font-size: 14px;
   }
   .open-gorgias:hover { text-decoration: underline; }
+  .detail-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .btn-remove-ticket {
+    background: transparent;
+    border: 1px solid var(--red);
+    color: var(--red);
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .btn-remove-ticket:hover { background: rgba(255,107,107,0.15); }
+  .btn-remove-ticket:disabled { opacity: 0.5; cursor: not-allowed; }
   .image-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
@@ -1830,6 +1882,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="search-box">
     <span class="search-icon">&#128269;</span>
     <input type="text" id="searchInput" placeholder="Search by ticket #, tracking number, customer name or email..." oninput="filterTickets()">
+    <button class="btn-add-ticket" onclick="toggleAddTicket()" title="Add ticket to UK Returns">+</button>
+  </div>
+  <div id="addTicketForm" style="display:none">
+    <div class="add-ticket-row">
+      <input type="text" id="addTicketInput" placeholder="Enter ticket ID (e.g. 12345 or #12345)" onkeydown="if(event.key==='Enter')submitAddTicket()">
+      <button class="btn-sm btn-add" id="addTicketBtn" onclick="submitAddTicket()">Add & Tag</button>
+    </div>
+    <div id="addTicketMsg"></div>
   </div>
 </div>
 
@@ -2141,7 +2201,10 @@ function openDetail(id) {
       <div class="note-box">${esc(t.latest_internal_note)}</div>
     </div>` : ''}
 
-    <a class="open-gorgias" href="${t.gorgias_url}" target="_blank">Open in Gorgias &#x2197;</a>
+    <div class="detail-actions">
+      <a class="open-gorgias" href="${t.gorgias_url}" target="_blank">Open in Gorgias &#x2197;</a>
+      <button class="btn-remove-ticket" onclick="removeTicket(${t.id})">Remove from UK Returns</button>
+    </div>
   `;
 
   document.getElementById('detailOverlay').classList.add('open');
@@ -2208,6 +2271,86 @@ function closeDetail() {
 function openLightbox(url) {
   document.getElementById('lightboxImg').src = url;
   document.getElementById('lightbox').classList.add('open');
+}
+
+async function removeTicket(ticketId) {
+  if (!confirm('Remove ticket #' + ticketId + ' from UK Returns? This will remove the UK Return tag.')) return;
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Removing...';
+  try {
+    const resp = await fetch('/api/remove-ticket', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ticket_id: ticketId}),
+    });
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+    if (data.ok) {
+      closeDetail();
+      loadTickets();
+    } else {
+      alert('Error: ' + (data.error || 'Unknown error'));
+      btn.disabled = false;
+      btn.textContent = 'Remove from UK Returns';
+    }
+  } catch (e) {
+    alert('Failed: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Remove from UK Returns';
+  }
+}
+
+function toggleAddTicket() {
+  const form = document.getElementById('addTicketForm');
+  if (form.style.display === 'none') {
+    form.style.display = 'block';
+    document.getElementById('addTicketInput').focus();
+  } else {
+    form.style.display = 'none';
+  }
+}
+
+async function submitAddTicket() {
+  const input = document.getElementById('addTicketInput');
+  const btn = document.getElementById('addTicketBtn');
+  const msgDiv = document.getElementById('addTicketMsg');
+  let ticketId = input.value.trim().replace(/^#/, '');
+
+  if (!ticketId || !/^\d+$/.test(ticketId)) {
+    msgDiv.innerHTML = '<span style="color:var(--red);font-size:13px">Enter a valid ticket ID (numbers only)</span>';
+    input.focus();
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Adding...';
+  msgDiv.innerHTML = '';
+
+  try {
+    const resp = await fetch('/api/add-ticket', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ticket_id: ticketId}),
+    });
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+    if (data.ok) {
+      msgDiv.innerHTML = '<span style="color:var(--green);font-size:13px">Ticket #' + ticketId + ' tagged &amp; added! Refreshing...</span>';
+      input.value = '';
+      setTimeout(() => {
+        document.getElementById('addTicketForm').style.display = 'none';
+        msgDiv.innerHTML = '';
+        loadTickets();
+      }, 1500);
+    } else {
+      msgDiv.innerHTML = '<span style="color:var(--red);font-size:13px">Error: ' + (data.error || 'Unknown error') + '</span>';
+    }
+  } catch (e) {
+    msgDiv.innerHTML = '<span style="color:var(--red);font-size:13px">Failed: ' + e.message + '</span>';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Add & Tag';
 }
 
 function toggleAddTracking(ticketId) {
@@ -2467,6 +2610,147 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 # Invalidate cache so next load picks up the new note
                 _cache["timestamp"] = 0
                 self.wfile.write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
+        elif self.path == '/api/add-ticket':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+            except Exception:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                return
+
+            ticket_id = str(data.get("ticket_id", "")).strip().lstrip("#")
+            if not ticket_id or not ticket_id.isdigit():
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Valid ticket ID required"}).encode())
+                return
+
+            # First check ticket exists
+            ticket = gorgias_request(f"tickets/{ticket_id}")
+            if ticket.get("error"):
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket['error']}"}).encode())
+                return
+
+            # Get current tags and add 'UK Return' if not already present
+            current_tags = ticket.get("tags") or []
+            tag_names = [t.get("name", "").lower() for t in current_tags if isinstance(t, dict)]
+
+            if "uk return" in tag_names:
+                # Already tagged — just invalidate cache to pick it up
+                _cache["timestamp"] = 0
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True, "message": "Ticket already has UK Return tag"}).encode())
+                return
+
+            # Add the UK Return tag via PATCH
+            new_tags = [{"name": t.get("name", "")} for t in current_tags if isinstance(t, dict)]
+            new_tags.append({"name": "UK Return"})
+
+            # Use PUT to update ticket tags
+            update_result = gorgias_post(f"tickets/{ticket_id}", {})
+            # Gorgias needs a PUT for tag updates — use raw request
+            tag_url = f"{BASE_URL}/tickets/{ticket_id}"
+            tag_body = json.dumps({"tags": new_tags}).encode()
+            credentials = base64.b64encode(f"{GORGIAS_EMAIL}:{GORGIAS_API_KEY}".encode()).decode()
+            req = urllib.request.Request(tag_url, data=tag_body, method="PUT")
+            req.add_header("Authorization", f"Basic {credentials}")
+            req.add_header("Content-Type", "application/json")
+            req.add_header("User-Agent", "ClicksDashboard/1.0")
+
+            ctx = ssl.create_default_context()
+            try:
+                with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+                    resp_data = json.loads(resp.read().decode())
+                _cache["timestamp"] = 0  # Invalidate cache
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} tagged with UK Return"}).encode())
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode() if e.fp else ""
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": f"Failed to tag: HTTP {e.code} {err_body[:200]}"}).encode())
+            except Exception as e:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+
+        elif self.path == '/api/remove-ticket':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+            except Exception:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                return
+
+            ticket_id = str(data.get("ticket_id", "")).strip().lstrip("#")
+            if not ticket_id or not ticket_id.isdigit():
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Valid ticket ID required"}).encode())
+                return
+
+            # Fetch ticket to get current tags
+            ticket = gorgias_request(f"tickets/{ticket_id}")
+            if ticket.get("error"):
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket['error']}"}).encode())
+                return
+
+            current_tags = ticket.get("tags") or []
+            # Remove 'UK Return' tag (case-insensitive)
+            new_tags = [{"name": t.get("name", "")} for t in current_tags if isinstance(t, dict) and t.get("name", "").lower() != "uk return"]
+
+            # PUT updated tags back to Gorgias
+            tag_url = f"{BASE_URL}/tickets/{ticket_id}"
+            tag_body = json.dumps({"tags": new_tags}).encode()
+            credentials = base64.b64encode(f"{GORGIAS_EMAIL}:{GORGIAS_API_KEY}".encode()).decode()
+            req = urllib.request.Request(tag_url, data=tag_body, method="PUT")
+            req.add_header("Authorization", f"Basic {credentials}")
+            req.add_header("Content-Type", "application/json")
+            req.add_header("User-Agent", "ClicksDashboard/1.0")
+
+            ctx = ssl.create_default_context()
+            try:
+                with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+                    resp_data = json.loads(resp.read().decode())
+                _cache["timestamp"] = 0  # Invalidate cache
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} removed from UK Returns"}).encode())
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode() if e.fp else ""
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": f"Failed to remove tag: HTTP {e.code} {err_body[:200]}"}).encode())
+            except Exception as e:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+
         elif self.path == '/api/track-status':
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)
