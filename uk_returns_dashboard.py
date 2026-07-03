@@ -61,6 +61,20 @@ PARCELSAPP_API_KEY = os.environ.get("PARCELSAPP_API_KEY", "")
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Stock data file
+STOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_data.json")
+
+def _load_stock():
+    try:
+        with open(STOCK_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+def _save_stock(data):
+    with open(STOCK_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
 # Session store: {token: expiry_timestamp}
 _sessions = {}
 SESSION_TTL = 86400 * 7  # 7 days
@@ -246,7 +260,8 @@ def _track_via_17track(tracking_number):
                     err = rejected[0].get("error", {})
                     err_code = err.get("code", 0)
                     # -18010012 = already registered (treat as success)
-                    if err_code == -18010012 or "existed" in str(err.get("message", "")).lower():
+                    msg_lower = str(err.get("message", "")).lower()
+                    if err_code == -18010012 or "existed" in msg_lower or "registered" in msg_lower or "repeat" in msg_lower:
                         _registered_17track.add(tracking_number)
                     else:
                         return {"error": f"17track rejected: {err.get('message', 'unknown error')}"}
@@ -963,48 +978,125 @@ ISSUE_PATTERNS = [
 ]
 
 
+def _extract_shopify_order(order):
+    """Extract standardized Shopify order data from various API response formats."""
+    result = {
+        "order_name": str(order.get("name", order.get("order_number", order.get("id", "")))),
+        "order_date": order.get("created_at", order.get("date", order.get("order_date", ""))),
+        "total_price": str(order.get("total_price", order.get("total", ""))),
+        "currency": order.get("currency", order.get("presentment_currency", "")),
+        "financial_status": order.get("financial_status", order.get("payment_status", "")),
+        "fulfillment_status": order.get("fulfillment_status", ""),
+        "shipping_address": "",
+    }
+    addr = order.get("shipping_address") or {}
+    if isinstance(addr, dict):
+        parts = [addr.get("city", ""), addr.get("province", ""), addr.get("country", "")]
+        result["shipping_address"] = ", ".join(p for p in parts if p)
+    return result
+
+
 def enrich_with_messages(ticket_summary):
     """Fetch full messages for a ticket to extract more details."""
     tid = ticket_summary["id"]
 
-    # Fetch customer details for Shopify integration data
+    # Fetch customer details and Shopify integration data
     cid = ticket_summary.get("customer_id")
-    if cid and not ticket_summary.get("shopify"):
+    if cid:
         cust_data = gorgias_request(f"customers/{cid}")
         if "error" not in cust_data and isinstance(cust_data, dict):
-            # Check for Shopify data in customer's meta/integrations
-            for key in ("meta", "integrations", "data"):
-                integ = cust_data.get(key) or {}
-                if isinstance(integ, dict):
-                    shopify = integ.get("shopify") or integ.get("Shopify") or {}
-                    if isinstance(shopify, dict) and shopify.get("orders"):
-                        for order in shopify["orders"]:
-                            if isinstance(order, dict):
-                                order_name = order.get("name", order.get("order_number", ""))
-                                # Match against known order numbers
-                                known_orders = set(ticket_summary.get("order_numbers", []))
-                                if order_name and (not known_orders or order_name in known_orders):
-                                    ticket_summary["shopify"] = {
-                                        "order_name": order_name,
-                                        "order_date": order.get("created_at", ""),
-                                        "total_price": order.get("total_price", ""),
-                                        "currency": order.get("currency", order.get("presentment_currency", "")),
-                                        "financial_status": order.get("financial_status", ""),
-                                        "fulfillment_status": order.get("fulfillment_status", ""),
-                                        "shipping_address": "",
-                                    }
-                                    addr = order.get("shipping_address") or {}
-                                    if isinstance(addr, dict):
-                                        parts = [addr.get("city", ""), addr.get("province", ""), addr.get("country", "")]
-                                        ticket_summary["shopify"]["shipping_address"] = ", ".join(p for p in parts if p)
-                                    break
-                        break
             # Update customer data
             ticket_summary["customer_data"].update({
                 "note": cust_data.get("note", "") or ticket_summary["customer_data"].get("note", ""),
                 "nb_tickets": cust_data.get("nb_tickets", ""),
             })
+
+            # Try to get Shopify orders from customer's meta/integrations
+            if not ticket_summary.get("shopify"):
+                for key in ("meta", "integrations", "data"):
+                    integ = cust_data.get(key) or {}
+                    if isinstance(integ, dict):
+                        shopify = integ.get("shopify") or integ.get("Shopify") or {}
+                        if isinstance(shopify, dict) and shopify.get("orders"):
+                            for order in shopify["orders"]:
+                                if isinstance(order, dict):
+                                    order_name = order.get("name", order.get("order_number", ""))
+                                    known_orders = set(ticket_summary.get("order_numbers", []))
+                                    if order_name and (not known_orders or order_name in known_orders):
+                                        ticket_summary["shopify"] = _extract_shopify_order(order)
+                                        break
+                            break
         time.sleep(0.3)
+
+        # Try Gorgias widget data API for Shopify orders (where Gorgias sidebar gets its data)
+        if not ticket_summary.get("shopify") or not ticket_summary["shopify"].get("order_date"):
+            try:
+                widget_data = gorgias_request(f"customers/{cid}/widgets")
+                if isinstance(widget_data, list):
+                    for widget in widget_data:
+                        if not isinstance(widget, dict):
+                            continue
+                        # Look for Shopify widget
+                        wtype = (widget.get("type", "") or widget.get("integration", "") or "").lower()
+                        if "shopify" in wtype or "order" in wtype:
+                            orders = widget.get("orders") or widget.get("data", {}).get("orders") or []
+                            if not isinstance(orders, list):
+                                orders = []
+                            for order in orders:
+                                if isinstance(order, dict):
+                                    order_name = str(order.get("name", order.get("order_number", order.get("id", ""))))
+                                    known_orders = set(ticket_summary.get("order_numbers", []))
+                                    if order_name and (not known_orders or order_name.upper() in {o.upper() for o in known_orders}):
+                                        ticket_summary["shopify"] = _extract_shopify_order(order)
+                                        break
+                elif isinstance(widget_data, dict) and not widget_data.get("error"):
+                    # Some Gorgias versions return {data: [...]}
+                    for widget in (widget_data.get("data") or []):
+                        if not isinstance(widget, dict):
+                            continue
+                        wtype = (widget.get("type", "") or "").lower()
+                        if "shopify" in wtype:
+                            for order in (widget.get("orders") or []):
+                                if isinstance(order, dict):
+                                    order_name = str(order.get("name", ""))
+                                    known_orders = set(ticket_summary.get("order_numbers", []))
+                                    if order_name and (not known_orders or order_name.upper() in {o.upper() for o in known_orders}):
+                                        ticket_summary["shopify"] = _extract_shopify_order(order)
+                                        break
+            except Exception as e:
+                print(f"  [Widget] Error fetching widget data: {e}")
+            time.sleep(0.3)
+
+        # Also try fetching ticket with related_objects for order data
+        if not ticket_summary.get("shopify") or not ticket_summary["shopify"].get("order_date"):
+            try:
+                ticket_full = gorgias_request(f"tickets/{tid}", {"include": "related_objects"})
+                if isinstance(ticket_full, dict) and "error" not in ticket_full:
+                    # Check related_objects
+                    related = ticket_full.get("related_objects") or {}
+                    if isinstance(related, dict):
+                        for rkey, rval in related.items():
+                            if isinstance(rval, dict):
+                                for obj in (rval.get("data") or [rval]):
+                                    if isinstance(obj, dict) and (obj.get("created_at") or obj.get("total_price")):
+                                        order_name = str(obj.get("name", obj.get("order_number", "")))
+                                        known_orders = set(ticket_summary.get("order_numbers", []))
+                                        if not known_orders or order_name.upper() in {o.upper() for o in known_orders}:
+                                            ticket_summary["shopify"] = _extract_shopify_order(obj)
+                                            break
+                    # Check integrations at ticket level too
+                    for key in ("integrations", "meta"):
+                        integ = ticket_full.get(key) or {}
+                        if isinstance(integ, dict):
+                            shopify = integ.get("shopify") or integ.get("Shopify") or {}
+                            if isinstance(shopify, dict):
+                                for order in (shopify.get("orders") or []):
+                                    if isinstance(order, dict):
+                                        ticket_summary["shopify"] = _extract_shopify_order(order)
+                                        break
+            except Exception as e:
+                print(f"  [Related] Error: {e}")
+            time.sleep(0.3)
 
     data = gorgias_request(f"tickets/{tid}/messages", {"limit": 100})
     if "error" not in data:
@@ -1316,6 +1408,158 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     color: var(--text-dim);
   }
   .btn-outline:hover { border-color: var(--accent); color: var(--text); }
+
+  /* Tab navigation */
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    padding: 0 32px;
+    border-bottom: 1px solid var(--border);
+    background: var(--card);
+  }
+  .tab-btn {
+    padding: 12px 24px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-dim);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--accent-light); border-bottom-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* Stock tab */
+  .stock-summary {
+    display: flex;
+    gap: 16px;
+    padding: 16px 32px;
+    overflow-x: auto;
+  }
+  .stock-table-wrap {
+    padding: 0 32px 32px;
+    overflow-x: auto;
+  }
+  .stock-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .stock-table th {
+    background: rgba(108,92,231,0.12);
+    color: var(--accent-light);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  .stock-table th.num, .stock-table td.num { text-align: center; }
+  .stock-table td {
+    padding: 10px 16px;
+    font-size: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .stock-table tr:last-child td { border-bottom: none; }
+  .stock-table tr:hover td { background: var(--card-hover); }
+  .stock-table .sku { font-family: monospace; font-weight: 600; color: var(--accent-light); }
+  .stock-table .total-val { font-weight: 700; color: var(--text); }
+  .stock-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .stock-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+  .stock-btn:hover { border-color: var(--accent); color: var(--accent-light); }
+  .stock-btn.delete:hover { border-color: var(--red); color: var(--red); }
+  .stock-search {
+    padding: 16px 32px;
+  }
+  .stock-toolbar {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .stock-toolbar input {
+    flex: 1;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 16px;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+  }
+  .stock-toolbar input:focus { border-color: var(--accent); }
+  .stock-toolbar input::placeholder { color: var(--text-dim); }
+  /* Stock edit modal */
+  .stock-modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+  }
+  .stock-modal-overlay.open { display: flex; }
+  .stock-modal {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    width: 420px;
+    max-width: 95vw;
+    animation: slideIn 0.2s ease;
+  }
+  .stock-modal h3 { margin-bottom: 16px; font-size: 16px; }
+  .stock-modal label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+    margin-top: 12px;
+  }
+  .stock-modal input {
+    width: 100%;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+  }
+  .stock-modal input:focus { border-color: var(--accent); }
+  .stock-modal-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 20px;
+  }
+
   .stats-bar {
     display: flex;
     gap: 16px;
@@ -1863,13 +2107,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <body>
 
 <div class="header">
-  <h1><span>&#x1F4E6;</span> Clicks UK Returns</h1>
+  <h1><span>&#x1F4E6;</span> Clicks UK Dashboard</h1>
   <div class="header-right">
     <span id="lastUpdated" style="font-size:13px;color:var(--text-dim)"></span>
-    <button class="btn" id="refreshBtn" onclick="loadTickets()">Refresh</button>
+    <button class="btn" id="refreshBtn" onclick="refreshCurrentTab()">Refresh</button>
     <a href="/auth/logout" class="btn btn-logout" title="Sign out">Logout</a>
   </div>
 </div>
+
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('returns',this)">UK Returns</button>
+  <button class="tab-btn" onclick="switchTab('stock',this)">UK Stock</button>
+</div>
+
+<!-- === RETURNS TAB === -->
+<div id="tab-returns" class="tab-content active">
 
 <div class="stats-bar" id="statsBar">
   <div class="stat-card total"><div class="label">Total Returns</div><div class="value" id="statTotal">-</div></div>
@@ -1917,6 +2169,65 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+</div><!-- end tab-returns -->
+
+<!-- === STOCK TAB === -->
+<div id="tab-stock" class="tab-content">
+  <div class="stock-summary" id="stockSummary">
+    <div class="stat-card total"><div class="label">Total SKUs</div><div class="value" id="stockSkuCount">-</div></div>
+    <div class="stat-card open"><div class="label">Total Units</div><div class="value" id="stockTotalUnits">-</div></div>
+    <div class="stat-card pending"><div class="label">Brand New</div><div class="value" id="stockBrandNew">-</div></div>
+    <div class="stat-card closed"><div class="label">Non-Pristine</div><div class="value" id="stockNonPristine">-</div></div>
+  </div>
+  <div class="stock-search">
+    <div class="stock-toolbar">
+      <input type="text" id="stockSearch" placeholder="Search by SKU or description..." oninput="filterStock()">
+      <button class="btn" onclick="openStockModal()">+ Add Product</button>
+    </div>
+  </div>
+  <div class="stock-table-wrap">
+    <table class="stock-table">
+      <thead>
+        <tr>
+          <th>SKU</th>
+          <th>Description</th>
+          <th class="num">Brand New</th>
+          <th class="num">Non-Pristine</th>
+          <th class="num">Damaged</th>
+          <th class="num">Founders</th>
+          <th class="num">Total</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="stockBody"></tbody>
+    </table>
+  </div>
+</div><!-- end tab-stock -->
+
+<!-- Stock Edit Modal -->
+<div class="stock-modal-overlay" id="stockModalOverlay" onclick="if(event.target===this)closeStockModal()">
+  <div class="stock-modal">
+    <h3 id="stockModalTitle">Add Product</h3>
+    <input type="hidden" id="stockEditIdx" value="-1">
+    <label>SKU</label>
+    <input type="text" id="stockSku" placeholder="e.g. CK-5100-1">
+    <label>Description</label>
+    <input type="text" id="stockDesc" placeholder="e.g. 15 Pro - London Sky">
+    <label>Brand New</label>
+    <input type="number" id="stockQtyNew" value="0" min="0">
+    <label>Non-Pristine</label>
+    <input type="number" id="stockQtyUsed" value="0" min="0">
+    <label>Damaged</label>
+    <input type="number" id="stockQtyDamaged" value="0" min="0">
+    <label>Founders</label>
+    <input type="number" id="stockQtyFounders" value="0" min="0">
+    <div class="stock-modal-actions">
+      <button class="btn btn-outline" onclick="closeStockModal()">Cancel</button>
+      <button class="btn" onclick="saveStock()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Detail Panel -->
 <div class="detail-overlay" id="detailOverlay" onclick="if(event.target===this)closeDetail()">
   <div class="detail-panel" id="detailPanel"></div>
@@ -1930,6 +2241,159 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <script>
 let allTickets = [];
 let currentFilter = 'all';
+let stockData = [];
+let currentTab = 'returns';
+
+function switchTab(tab, btn) {
+  currentTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+}
+
+function refreshCurrentTab() {
+  if (currentTab === 'returns') loadTickets();
+  else loadStock();
+}
+
+// ============ STOCK MANAGEMENT ============
+async function loadStock() {
+  try {
+    const resp = await fetch('/api/stock');
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+    stockData = data.stock || [];
+    renderStock();
+  } catch (e) {
+    console.error('Stock load error:', e);
+  }
+}
+
+function renderStock() {
+  const body = document.getElementById('stockBody');
+  const search = (document.getElementById('stockSearch').value || '').toLowerCase();
+  const filtered = stockData.filter(s =>
+    s.sku.toLowerCase().includes(search) || s.description.toLowerCase().includes(search)
+  );
+
+  let totalNew = 0, totalUsed = 0, totalDmg = 0, totalFounders = 0;
+  stockData.forEach(s => {
+    totalNew += s.brand_new || 0;
+    totalUsed += s.non_pristine || 0;
+    totalDmg += s.damaged || 0;
+    totalFounders += s.founders || 0;
+  });
+  const totalAll = totalNew + totalUsed + totalDmg + totalFounders;
+  document.getElementById('stockSkuCount').textContent = stockData.length;
+  document.getElementById('stockTotalUnits').textContent = totalAll;
+  document.getElementById('stockBrandNew').textContent = totalNew;
+  document.getElementById('stockNonPristine').textContent = totalUsed;
+
+  body.innerHTML = filtered.map((s, i) => {
+    const idx = stockData.indexOf(s);
+    const total = (s.brand_new||0) + (s.non_pristine||0) + (s.damaged||0) + (s.founders||0);
+    return `<tr>
+      <td class="sku">${esc(s.sku)}</td>
+      <td>${esc(s.description)}</td>
+      <td class="num">${s.brand_new||0}</td>
+      <td class="num">${s.non_pristine||0}</td>
+      <td class="num">${s.damaged||0}</td>
+      <td class="num">${s.founders||0}</td>
+      <td class="num total-val">${total}</td>
+      <td><div class="stock-actions">
+        <button class="stock-btn" onclick="editStock(${idx})" title="Edit">&#9998;</button>
+        <button class="stock-btn delete" onclick="deleteStock(${idx})" title="Delete">&#x2715;</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+}
+
+function filterStock() { renderStock(); }
+
+function openStockModal(idx) {
+  const overlay = document.getElementById('stockModalOverlay');
+  const title = document.getElementById('stockModalTitle');
+  document.getElementById('stockEditIdx').value = idx !== undefined ? idx : -1;
+  if (idx !== undefined && stockData[idx]) {
+    const s = stockData[idx];
+    title.textContent = 'Edit Product';
+    document.getElementById('stockSku').value = s.sku;
+    document.getElementById('stockDesc').value = s.description;
+    document.getElementById('stockQtyNew').value = s.brand_new || 0;
+    document.getElementById('stockQtyUsed').value = s.non_pristine || 0;
+    document.getElementById('stockQtyDamaged').value = s.damaged || 0;
+    document.getElementById('stockQtyFounders').value = s.founders || 0;
+  } else {
+    title.textContent = 'Add Product';
+    document.getElementById('stockSku').value = '';
+    document.getElementById('stockDesc').value = '';
+    document.getElementById('stockQtyNew').value = 0;
+    document.getElementById('stockQtyUsed').value = 0;
+    document.getElementById('stockQtyDamaged').value = 0;
+    document.getElementById('stockQtyFounders').value = 0;
+  }
+  overlay.classList.add('open');
+}
+
+function closeStockModal() {
+  document.getElementById('stockModalOverlay').classList.remove('open');
+}
+
+function editStock(idx) { openStockModal(idx); }
+
+async function saveStock() {
+  const idx = parseInt(document.getElementById('stockEditIdx').value);
+  const item = {
+    sku: document.getElementById('stockSku').value.trim(),
+    description: document.getElementById('stockDesc').value.trim(),
+    brand_new: parseInt(document.getElementById('stockQtyNew').value) || 0,
+    non_pristine: parseInt(document.getElementById('stockQtyUsed').value) || 0,
+    damaged: parseInt(document.getElementById('stockQtyDamaged').value) || 0,
+    founders: parseInt(document.getElementById('stockQtyFounders').value) || 0,
+  };
+  if (!item.sku) { alert('SKU is required'); return; }
+  try {
+    const resp = await fetch('/api/stock', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: idx >= 0 ? 'update' : 'add', index: idx, item}),
+    });
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+    if (data.ok) {
+      stockData = data.stock;
+      renderStock();
+      closeStockModal();
+    } else {
+      alert('Error: ' + (data.error || 'Unknown'));
+    }
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function deleteStock(idx) {
+  const s = stockData[idx];
+  if (!confirm('Delete ' + s.sku + ' - ' + s.description + '?')) return;
+  try {
+    const resp = await fetch('/api/stock', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: 'delete', index: idx}),
+    });
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+    if (data.ok) {
+      stockData = data.stock;
+      renderStock();
+    }
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
 
 async function loadTickets() {
   const btn = document.getElementById('refreshBtn');
@@ -2051,7 +2515,15 @@ function filterTickets() {
       <div class="ticket-id">#${t.id}</div>
       <div class="ticket-subject">${esc(t.subject)}</div>
       <div class="ticket-id" style="font-size:12px">${(t.order_numbers||[]).join(', ') || '-'}</div>
-      <div class="ticket-product">${(t.device_info||[]).map(d => esc(d)).join(', ') || '-'}</div>
+      <div class="ticket-product">${(function(){
+        const di = t.device_info || [];
+        if (di.length) return di.map(d => esc(d)).join(', ');
+        const cf = t.custom_fields || {};
+        const m = cf['Model'] || cf['model'] || '';
+        const c = cf['Colour'] || cf['colour'] || cf['Color'] || cf['color'] || '';
+        const p = [m, c].filter(Boolean).join(' - ');
+        return p ? esc(p) : '-';
+      })()}</div>
       <div class="timeline-compact" title="${(t.timeline||[]).filter(s=>s.done).map(s=>s.label).join(' → ') || 'No progress'}">
         ${(t.timeline||[]).map((s,i) => {
           const pip = '<span class="timeline-pip' + (s.done ? ' done' : '') + '" title="' + esc(s.label) + '"></span>';
@@ -2076,8 +2548,20 @@ function openDetail(id) {
     ? t.tracking_numbers.map(n => `<span class="tag">${esc(n)}</span>`).join('')
     : '<span style="color:var(--text-dim)">None detected</span>';
 
-  const deviceHtml = (t.device_info || []).length
-    ? t.device_info.map(d => `<span class="tag">${esc(d)}</span>`).join('')
+  // Build product info from device_info + custom fields (Model, Colour, Category, Return Reason)
+  let productParts = [...(t.device_info || [])];
+  const cf = t.custom_fields || {};
+  const cfModel = cf['Model'] || cf['model'] || '';
+  const cfColour = cf['Colour'] || cf['colour'] || cf['Color'] || cf['color'] || '';
+  if (cfModel || cfColour) {
+    const cfProduct = [cfModel, cfColour].filter(Boolean).join(' - ');
+    // Only add if not already captured by regex
+    if (cfProduct && !productParts.some(p => p.toLowerCase().includes(cfModel.toLowerCase()))) {
+      productParts.unshift(cfProduct);
+    }
+  }
+  const deviceHtml = productParts.length
+    ? productParts.map(d => `<span class="tag">${esc(d)}</span>`).join('')
     : '<span style="color:var(--text-dim)">None detected</span>';
 
   const customFieldsHtml = Object.entries(t.custom_fields || {}).map(([k, v]) =>
@@ -2101,7 +2585,10 @@ function openDetail(id) {
     : '<span style="color:var(--text-dim)">No images attached</span>';
 
   panel.innerHTML = `
-    <button class="detail-close" onclick="closeDetail()">&times;</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <button class="btn-remove-ticket" onclick="removeTicket(${t.id})">Remove from UK Returns</button>
+      <button class="detail-close" onclick="closeDetail()">&times;</button>
+    </div>
     <div class="detail-header">
       <h2>${esc(t.subject)}</h2>
       <span class="status-badge status-${t.status}">${t.status}</span>
@@ -2203,7 +2690,6 @@ function openDetail(id) {
 
     <div class="detail-actions">
       <a class="open-gorgias" href="${t.gorgias_url}" target="_blank">Open in Gorgias &#x2197;</a>
-      <button class="btn-remove-ticket" onclick="removeTicket(${t.id})">Remove from UK Returns</button>
     </div>
   `;
 
@@ -2442,6 +2928,7 @@ document.addEventListener('keydown', e => {
 
 // Load on start
 loadTickets();
+loadStock();
 </script>
 </body>
 </html>"""
@@ -2532,6 +3019,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(summary).encode())
             else:
                 self.wfile.write(json.dumps(data).encode())
+
+        elif self.path == '/api/stock':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"stock": _load_stock()}).encode())
 
         else:
             self.send_response(404)
@@ -2750,6 +3243,50 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+
+        elif self.path == '/api/stock':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+            except Exception:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                return
+
+            action = data.get("action", "")
+            stock = _load_stock()
+
+            if action == "add":
+                item = data.get("item", {})
+                if not item.get("sku"):
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"ok": False, "error": "SKU required"}).encode())
+                    return
+                stock.append(item)
+                _save_stock(stock)
+
+            elif action == "update":
+                idx = data.get("index", -1)
+                item = data.get("item", {})
+                if 0 <= idx < len(stock):
+                    stock[idx] = item
+                    _save_stock(stock)
+
+            elif action == "delete":
+                idx = data.get("index", -1)
+                if 0 <= idx < len(stock):
+                    stock.pop(idx)
+                    _save_stock(stock)
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "stock": stock}).encode())
 
         elif self.path == '/api/track-status':
             content_length = int(self.headers.get('Content-Length', 0))
