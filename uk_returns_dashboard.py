@@ -207,6 +207,11 @@ def track_shipment(tracking_number):
     if TRACK17_API_KEY:
         result = _track_via_17track(tracking_number)
         if result and not result.get("error"):
+            # If 17track returned NotFound for a Royal Mail number, add direct link
+            clean = tracking_number.replace(" ", "").upper()
+            if result.get("status") in ("NotFound", "unknown", "") and re.match(r'^[A-Z]{2}\d{9}GB$', clean):
+                result["royal_mail_link"] = f"https://www.royalmail.com/track-your-item#/tracking-results/{clean}"
+                result["carrier"] = "Royal Mail"
             _tracking_cache[tracking_number] = {"data": result, "timestamp": now}
             result["provider"] = "17track"
             return result
@@ -218,6 +223,18 @@ def track_shipment(tracking_number):
             _tracking_cache[tracking_number] = {"data": result, "timestamp": now}
             result["provider"] = "ParcelsApp"
             return result
+
+    # If tracking failed for a Royal Mail number, provide a direct link
+    clean = tracking_number.replace(" ", "").upper()
+    if re.match(r'^[A-Z]{2}\d{9}GB$', clean):
+        rm_link = f"https://www.royalmail.com/track-your-item#/tracking-results/{clean}"
+        return {
+            "status": "NotFound",
+            "carrier": "Royal Mail",
+            "checkpoints": [],
+            "error": None,
+            "royal_mail_link": rm_link,
+        }
 
     # Both failed or unconfigured
     if result and result.get("error"):
@@ -2695,6 +2712,8 @@ async function fetchTrackingAnalysis(ticketId, trackingNumbers) {
           const d = cp.date ? new Date(cp.date).toLocaleString('en-GB', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
           return `<div class="checkpoint"><span class="cp-date">${esc(d)}</span><span class="cp-msg">${esc(cp.message || cp.status || '')}</span>${cp.location ? `<span class="cp-loc">${esc(cp.location)}</span>` : ''}</div>`;
         }).join('');
+      } else if (data.royal_mail_link) {
+        cpHtml = `<div style="font-size:12px;margin-top:4px"><a href="${esc(data.royal_mail_link)}" target="_blank" style="color:var(--accent);text-decoration:underline">Track on Royal Mail website →</a></div>`;
       } else {
         cpHtml = '<div style="color:var(--text-dim);font-size:12px">No checkpoints available yet</div>';
       }
