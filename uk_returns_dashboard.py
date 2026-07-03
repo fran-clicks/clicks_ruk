@@ -2563,10 +2563,10 @@ function openDetail(id) {
     : '<span style="color:var(--text-dim)">None found</span>';
 
   const imagesHtml = (t.images || []).length
-    ? `<div class="image-grid">${t.images.map(img =>
+    ? `<div class="image-grid" id="imageGrid-${t.id}">${t.images.map(img =>
         `<img src="${esc(img.url)}" alt="${esc(img.name)}" title="${esc(img.name)}" onclick="event.stopPropagation();openLightbox('${img.url.replace(/'/g, "\\'")}')" loading="lazy">`
       ).join('')}</div>`
-    : '<span style="color:var(--text-dim)">No images attached</span>';
+    : `<div id="imageGrid-${t.id}" class="image-grid" style="display:none"></div><span id="noImages-${t.id}" style="color:var(--text-dim)">No images attached</span>`;
 
   panel.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -2778,6 +2778,23 @@ async function uploadImageNote(ticketId, input) {
       const data = await resp.json();
       if (data.ok) {
         statusDiv.innerHTML = '<span style="color:#4caf50">Image posted as internal note</span>';
+        // Add image to the attached images grid
+        const grid = document.getElementById('imageGrid-' + ticketId);
+        const noImg = document.getElementById('noImages-' + ticketId);
+        if (grid) {
+          const img = document.createElement('img');
+          img.src = base64;
+          img.alt = file.name;
+          img.title = file.name;
+          img.loading = 'lazy';
+          img.onclick = function(ev) { ev.stopPropagation(); openLightbox(base64); };
+          grid.appendChild(img);
+          grid.style.display = '';
+          if (noImg) noImg.style.display = 'none';
+          // Update the count in the header
+          const h3 = grid.closest('.detail-section')?.querySelector('h3');
+          if (h3) { const c = grid.querySelectorAll('img').length; h3.textContent = 'Attached Images (' + c + ')'; }
+        }
         previewDiv.innerHTML = '';
         input.value = '';
         setTimeout(() => { statusDiv.innerHTML = ''; }, 3000);
