@@ -553,6 +553,24 @@ RETURN_TIMELINE_STAGES = [
 ORDER_PATTERN = r'\b(CT[A-Za-z0-9]{2,20})\b'
 
 
+def _extract_shopify_order(order):
+    """Extract standardized Shopify order data from various API response formats."""
+    result = {
+        "order_name": str(order.get("name", order.get("order_number", order.get("id", "")))),
+        "order_date": order.get("created_at", order.get("date", order.get("order_date", ""))),
+        "total_price": str(order.get("total_price", order.get("total", ""))),
+        "currency": order.get("currency", order.get("presentment_currency", "")),
+        "financial_status": order.get("financial_status", order.get("payment_status", "")),
+        "fulfillment_status": order.get("fulfillment_status", ""),
+        "shipping_address": "",
+    }
+    addr = order.get("shipping_address") or {}
+    if isinstance(addr, dict):
+        parts = [addr.get("city", ""), addr.get("province", ""), addr.get("country", "")]
+        result["shipping_address"] = ", ".join(p for p in parts if p)
+    return result
+
+
 def extract_ticket_details(ticket):
     """Extract relevant return details from a ticket."""
     if not isinstance(ticket, dict):
@@ -597,46 +615,63 @@ def extract_ticket_details(ticket):
         customer_email = "N/A"
 
     # Try to get Shopify order data from integrations
+    # Gorgias uses numeric integration IDs as keys (e.g. "90047"), not "shopify"
     shopify_data = {}
-    integrations = ticket.get("integrations") or ticket.get("meta") or {}
+    integrations = ticket.get("integrations") or {}
     if isinstance(integrations, dict):
-        shopify = integrations.get("shopify") or integrations.get("Shopify") or {}
-        if isinstance(shopify, dict):
-            for order in (shopify.get("orders") or []):
-                if isinstance(order, dict):
-                    order_name = order.get("name", order.get("order_number", ""))
-                    if order_name:
-                        shopify_data = {
-                            "order_name": order_name,
-                            "order_date": order.get("created_at", ""),
-                            "total_price": order.get("total_price", ""),
-                            "currency": order.get("currency", ""),
-                            "financial_status": order.get("financial_status", ""),
-                            "fulfillment_status": order.get("fulfillment_status", ""),
-                            "shipping_address": "",
-                        }
-                        # Shipping address
-                        addr = order.get("shipping_address") or {}
-                        if isinstance(addr, dict):
-                            parts = [addr.get("city", ""), addr.get("province", ""), addr.get("country", "")]
-                            shopify_data["shipping_address"] = ", ".join(p for p in parts if p)
-                        # Line items (products)
-                        for item in (order.get("line_items") or []):
-                            if isinstance(item, dict):
-                                item_name = item.get("title", "") or item.get("name", "")
-                                if item_name:
-                                    order_numbers.add(order_name)
-                        break  # use most recent order
+        for integ_id, integ_data in integrations.items():
+            if not isinstance(integ_data, dict):
+                continue
+            orders = integ_data.get("orders") or []
+            if not isinstance(orders, list):
+                continue
+            for order in orders:
+                if not isinstance(order, dict):
+                    continue
+                order_name = str(order.get("name", order.get("order_number", "")))
+                if order_name:
+                    shopify_data = _extract_shopify_order(order)
+                    # Line items (products)
+                    for item in (order.get("line_items") or []):
+                        if isinstance(item, dict):
+                            item_name = item.get("title", "") or item.get("name", "")
+                            if item_name:
+                                order_numbers.add(order_name)
+                    break
+            if shopify_data:
+                break
 
     # Tags
     raw_tags = ticket.get("tags") or []
     tags = [tag.get("name", "") for tag in raw_tags if isinstance(tag, dict)]
 
-    # Custom fields
+    # Custom fields — Gorgias uses numeric IDs as keys
+    # Known field IDs: 235348=Model, 235351=Colour, 235346=Category, 229827=Return Reason, 235350=Country
+    CUSTOM_FIELD_NAMES = {
+        "235348": "Model",
+        "235351": "Colour",
+        "235346": "Category",
+        "229827": "Return Reason",
+        "235350": "Country",
+        "235347": "Warranty Result",
+    }
     custom_fields = {}
-    for field in (ticket.get("custom_fields") or []):
-        if isinstance(field, dict):
-            custom_fields[field.get("name", "")] = field.get("value", "")
+    raw_cf = ticket.get("custom_fields")
+    if isinstance(raw_cf, dict):
+        # Dict format: {"235348": {"id": 235348, "value": "iPhone::iPhone 16::16 Pro Max"}}
+        for fid, fdata in raw_cf.items():
+            if isinstance(fdata, dict):
+                val = fdata.get("value", "")
+                # Use last part of hierarchical values (e.g. "iPhone::iPhone 16::16 Pro Max" → "16 Pro Max")
+                if "::" in str(val):
+                    val = str(val).split("::")[-1].strip()
+                field_name = CUSTOM_FIELD_NAMES.get(str(fid), f"Field {fid}")
+                custom_fields[field_name] = val
+    elif isinstance(raw_cf, list):
+        # Legacy list format: [{"name": "...", "value": "..."}]
+        for field in raw_cf:
+            if isinstance(field, dict):
+                custom_fields[field.get("name", "")] = field.get("value", "")
 
     # Extract order numbers from subject, custom fields, and integrations
     order_numbers = set()
@@ -978,24 +1013,6 @@ ISSUE_PATTERNS = [
 ]
 
 
-def _extract_shopify_order(order):
-    """Extract standardized Shopify order data from various API response formats."""
-    result = {
-        "order_name": str(order.get("name", order.get("order_number", order.get("id", "")))),
-        "order_date": order.get("created_at", order.get("date", order.get("order_date", ""))),
-        "total_price": str(order.get("total_price", order.get("total", ""))),
-        "currency": order.get("currency", order.get("presentment_currency", "")),
-        "financial_status": order.get("financial_status", order.get("payment_status", "")),
-        "fulfillment_status": order.get("fulfillment_status", ""),
-        "shipping_address": "",
-    }
-    addr = order.get("shipping_address") or {}
-    if isinstance(addr, dict):
-        parts = [addr.get("city", ""), addr.get("province", ""), addr.get("country", "")]
-        result["shipping_address"] = ", ".join(p for p in parts if p)
-    return result
-
-
 def enrich_with_messages(ticket_summary):
     """Fetch full messages for a ticket to extract more details."""
     tid = ticket_summary["id"]
@@ -1011,92 +1028,29 @@ def enrich_with_messages(ticket_summary):
                 "nb_tickets": cust_data.get("nb_tickets", ""),
             })
 
-            # Try to get Shopify orders from customer's meta/integrations
+            # Try to get Shopify orders from customer's integrations
+            # Gorgias uses numeric integration IDs as keys (e.g. "90047"), not "shopify"
             if not ticket_summary.get("shopify"):
-                for key in ("meta", "integrations", "data"):
-                    integ = cust_data.get(key) or {}
-                    if isinstance(integ, dict):
-                        shopify = integ.get("shopify") or integ.get("Shopify") or {}
-                        if isinstance(shopify, dict) and shopify.get("orders"):
-                            for order in shopify["orders"]:
-                                if isinstance(order, dict):
-                                    order_name = order.get("name", order.get("order_number", ""))
-                                    known_orders = set(ticket_summary.get("order_numbers", []))
-                                    if order_name and (not known_orders or order_name in known_orders):
-                                        ticket_summary["shopify"] = _extract_shopify_order(order)
-                                        break
+                integ = cust_data.get("integrations") or {}
+                if isinstance(integ, dict):
+                    for integ_id, integ_data in integ.items():
+                        if not isinstance(integ_data, dict):
+                            continue
+                        orders = integ_data.get("orders") or []
+                        if not isinstance(orders, list) or not orders:
+                            continue
+                        known_orders = set(o.upper() for o in ticket_summary.get("order_numbers", []))
+                        for order in orders:
+                            if not isinstance(order, dict):
+                                continue
+                            order_name = str(order.get("name", order.get("order_number", "")))
+                            if order_name and (not known_orders or order_name.upper() in known_orders):
+                                ticket_summary["shopify"] = _extract_shopify_order(order)
+                                break
+                        if ticket_summary.get("shopify"):
                             break
         time.sleep(0.3)
 
-        # Try Gorgias widget data API for Shopify orders (where Gorgias sidebar gets its data)
-        if not ticket_summary.get("shopify") or not ticket_summary["shopify"].get("order_date"):
-            try:
-                widget_data = gorgias_request(f"customers/{cid}/widgets")
-                if isinstance(widget_data, list):
-                    for widget in widget_data:
-                        if not isinstance(widget, dict):
-                            continue
-                        # Look for Shopify widget
-                        wtype = (widget.get("type", "") or widget.get("integration", "") or "").lower()
-                        if "shopify" in wtype or "order" in wtype:
-                            orders = widget.get("orders") or widget.get("data", {}).get("orders") or []
-                            if not isinstance(orders, list):
-                                orders = []
-                            for order in orders:
-                                if isinstance(order, dict):
-                                    order_name = str(order.get("name", order.get("order_number", order.get("id", ""))))
-                                    known_orders = set(ticket_summary.get("order_numbers", []))
-                                    if order_name and (not known_orders or order_name.upper() in {o.upper() for o in known_orders}):
-                                        ticket_summary["shopify"] = _extract_shopify_order(order)
-                                        break
-                elif isinstance(widget_data, dict) and not widget_data.get("error"):
-                    # Some Gorgias versions return {data: [...]}
-                    for widget in (widget_data.get("data") or []):
-                        if not isinstance(widget, dict):
-                            continue
-                        wtype = (widget.get("type", "") or "").lower()
-                        if "shopify" in wtype:
-                            for order in (widget.get("orders") or []):
-                                if isinstance(order, dict):
-                                    order_name = str(order.get("name", ""))
-                                    known_orders = set(ticket_summary.get("order_numbers", []))
-                                    if order_name and (not known_orders or order_name.upper() in {o.upper() for o in known_orders}):
-                                        ticket_summary["shopify"] = _extract_shopify_order(order)
-                                        break
-            except Exception as e:
-                print(f"  [Widget] Error fetching widget data: {e}")
-            time.sleep(0.3)
-
-        # Also try fetching ticket with related_objects for order data
-        if not ticket_summary.get("shopify") or not ticket_summary["shopify"].get("order_date"):
-            try:
-                ticket_full = gorgias_request(f"tickets/{tid}", {"include": "related_objects"})
-                if isinstance(ticket_full, dict) and "error" not in ticket_full:
-                    # Check related_objects
-                    related = ticket_full.get("related_objects") or {}
-                    if isinstance(related, dict):
-                        for rkey, rval in related.items():
-                            if isinstance(rval, dict):
-                                for obj in (rval.get("data") or [rval]):
-                                    if isinstance(obj, dict) and (obj.get("created_at") or obj.get("total_price")):
-                                        order_name = str(obj.get("name", obj.get("order_number", "")))
-                                        known_orders = set(ticket_summary.get("order_numbers", []))
-                                        if not known_orders or order_name.upper() in {o.upper() for o in known_orders}:
-                                            ticket_summary["shopify"] = _extract_shopify_order(obj)
-                                            break
-                    # Check integrations at ticket level too
-                    for key in ("integrations", "meta"):
-                        integ = ticket_full.get(key) or {}
-                        if isinstance(integ, dict):
-                            shopify = integ.get("shopify") or integ.get("Shopify") or {}
-                            if isinstance(shopify, dict):
-                                for order in (shopify.get("orders") or []):
-                                    if isinstance(order, dict):
-                                        ticket_summary["shopify"] = _extract_shopify_order(order)
-                                        break
-            except Exception as e:
-                print(f"  [Related] Error: {e}")
-            time.sleep(0.3)
 
     data = gorgias_request(f"tickets/{tid}/messages", {"limit": 100})
     if "error" not in data:
@@ -3025,49 +2979,6 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({"stock": _load_stock()}).encode())
-
-        elif self.path.startswith('/api/debug-ticket/'):
-            # Temporary debug endpoint — shows raw Gorgias data for a ticket
-            ticket_id = self.path.split('/')[-1]
-            ticket_raw = gorgias_request(f"tickets/{ticket_id}")
-
-            debug = {"ticket_keys": [], "custom_fields_raw": None, "integrations_raw": None, "meta_raw": None, "related_objects_raw": None, "customer_id": None}
-            if isinstance(ticket_raw, dict) and "error" not in ticket_raw:
-                debug["ticket_keys"] = list(ticket_raw.keys())
-                debug["custom_fields_raw"] = ticket_raw.get("custom_fields")
-                debug["integrations_raw"] = ticket_raw.get("integrations")
-                debug["meta_raw"] = ticket_raw.get("meta")
-                debug["related_objects_raw"] = ticket_raw.get("related_objects")
-                cust = ticket_raw.get("customer") or {}
-                debug["customer_id"] = cust.get("id") if isinstance(cust, dict) else None
-
-                # Also fetch customer data
-                cid = debug["customer_id"]
-                if cid:
-                    cust_data = gorgias_request(f"customers/{cid}")
-                    if isinstance(cust_data, dict) and "error" not in cust_data:
-                        debug["customer_keys"] = list(cust_data.keys())
-                        debug["customer_meta"] = cust_data.get("meta")
-                        debug["customer_integrations"] = cust_data.get("integrations")
-                        debug["customer_data_field"] = cust_data.get("data")
-                        debug["customer_external_id"] = cust_data.get("external_id")
-
-                    # Try widgets endpoint
-                    widgets = gorgias_request(f"customers/{cid}/widgets")
-                    debug["widgets_raw"] = widgets if not isinstance(widgets, dict) or "error" not in widgets else str(widgets)
-
-                    # Try ticket with related_objects
-                    ticket_related = gorgias_request(f"tickets/{ticket_id}", {"include": "related_objects"})
-                    if isinstance(ticket_related, dict):
-                        debug["ticket_related_keys"] = list(ticket_related.keys())
-                        debug["related_objects_v2"] = ticket_related.get("related_objects")
-            else:
-                debug["error"] = ticket_raw
-
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(debug, indent=2, default=str).encode())
 
         else:
             self.send_response(404)
