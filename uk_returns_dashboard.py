@@ -1189,6 +1189,36 @@ def enrich_with_messages(ticket_summary):
         ticket_summary_copy["latest_internal_note"] = latest_internal_note
         ticket_summary_copy["messages_count"] = len(messages)
         ticket_summary_copy["full_text"] = " ".join(all_text)[:5000]
+
+        # Auto-set return progress to Processed if Shopify shows refunded
+        shopify = ticket_summary_copy.get("shopify") or {}
+        fin_status = str(shopify.get("financial_status", "")).lower()
+        if fin_status == "refunded":
+            current_tags = [t.lower() for t in ticket_summary_copy.get("tags", [])]
+            processed_tag = RETURN_TIMELINE_STAGES[-1]["tag"]  # "return processed"
+            if processed_tag not in current_tags:
+                # Add all stage tags up to Processed
+                all_stage_tags = [s["tag"] for s in RETURN_TIMELINE_STAGES]
+                existing_tags = ticket_summary_copy.get("tags", [])
+                existing_lower = {t.lower() for t in existing_tags}
+                tags_to_add = [t.title() for t in all_stage_tags if t not in existing_lower]
+                if tags_to_add:
+                    new_tags_list = [{"name": t} for t in existing_tags] + [{"name": t} for t in tags_to_add]
+                    try:
+                        tag_url = f"{BASE_URL}/tickets/{ticket_summary_copy['id']}"
+                        tag_body = json.dumps({"tags": new_tags_list}).encode()
+                        credentials = base64.b64encode(f"{GORGIAS_EMAIL}:{GORGIAS_API_KEY}".encode()).decode()
+                        req = urllib.request.Request(tag_url, data=tag_body, method="PUT")
+                        req.add_header("Authorization", f"Basic {credentials}")
+                        req.add_header("Content-Type", "application/json")
+                        req.add_header("User-Agent", "ClicksDashboard/1.0")
+                        ctx = ssl.create_default_context()
+                        with urllib.request.urlopen(req, context=ctx, timeout=30):
+                            pass
+                        ticket_summary_copy["tags"] = existing_tags + tags_to_add
+                    except Exception:
+                        pass  # silently fail, don't block ticket loading
+
         return ticket_summary_copy
     return ticket_summary
 
