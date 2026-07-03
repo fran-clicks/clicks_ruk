@@ -1626,7 +1626,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     cursor: pointer;
     transition: all 0.15s;
     display: grid;
-    grid-template-columns: 80px 1fr 120px 160px 100px 100px 160px 120px 120px 100px;
+    grid-template-columns: 80px 1fr 120px 160px 100px 100px 160px 120px 100px;
     align-items: center;
     gap: 16px;
   }
@@ -2114,7 +2114,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div>Loading UK return tickets from Gorgias...</div>
   </div>
   <div id="colHeaders" class="ticket-row col-headers" style="display:none">
-    <div>ID</div><div>Subject</div><div>Order</div><div>Product</div><div>Progress</div><div>Purchased</div><div>Customer</div><div>Updated</div><div>Assignee</div><div>Status</div>
+    <div>ID</div><div>Subject</div><div>Order</div><div>Product</div><div>Progress</div><div>Purchased</div><div>Customer</div><div>Updated</div><div>Status</div>
   </div>
   <div id="ticketList" class="ticket-list" style="display:none"></div>
   <div id="emptyState" class="empty-state" style="display:none">
@@ -2489,7 +2489,6 @@ function filterTickets() {
       <div class="ticket-date">${t.shopify?.order_date ? formatDate(t.shopify.order_date) : '-'}</div>
       <div class="ticket-customer">${esc(t.customer_name)}</div>
       <div class="ticket-date">${formatDate(t.updated)}</div>
-      <div class="ticket-assignee">${esc(t.assignee || 'Unassigned')}</div>
       <div><span class="status-badge status-${t.status}">${t.status}</span></div>
     </div>
   `).join('');
@@ -2578,8 +2577,6 @@ function openDetail(id) {
     <div class="detail-section">
       <h3>Return Details</h3>
       <div class="detail-row"><span class="label">Ticket ID</span><span class="value">#${t.id}</span></div>
-      <div class="detail-row"><span class="label">Channel</span><span class="value">${esc(t.channel)}</span></div>
-      <div class="detail-row"><span class="label">Assignee</span><span class="value">${esc(t.assignee || 'Unassigned')}</span></div>
       <div class="detail-row"><span class="label">Created</span><span class="value">${formatDate(t.created)}</span></div>
       <div class="detail-row"><span class="label">Last Updated</span><span class="value">${formatDate(t.updated)}</span></div>
       <div class="detail-row"><span class="label">Messages</span><span class="value">${t.messages_count}</span></div>
