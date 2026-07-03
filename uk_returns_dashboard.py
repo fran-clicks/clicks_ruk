@@ -2655,6 +2655,15 @@ function openDetail(id) {
     </div>
 
     <div class="detail-section">
+      <h3>Add Internal Note</h3>
+      <div id="internalNoteForm-${t.id}">
+        <textarea id="noteText-${t.id}" placeholder="Write an internal note..." style="width:100%;min-height:70px;background:var(--card-bg);color:var(--text-main);border:1px solid var(--border);border-radius:6px;padding:8px;font-size:13px;resize:vertical;font-family:inherit"></textarea>
+        <button onclick="postInternalNote('${t.id}')" style="margin-top:6px;padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">Post Note</button>
+        <div id="noteStatus-${t.id}" style="margin-top:6px;font-size:12px"></div>
+      </div>
+    </div>
+
+    <div class="detail-section">
       <h3>Tags</h3>
       <div class="tag-list">${tagsHtml}</div>
     </div>
@@ -2733,6 +2742,33 @@ async function fetchTrackingAnalysis(ticketId, trackingNumbers) {
   }
 
   container.innerHTML = html || '<div style="color:var(--text-dim);font-size:13px">No results</div>';
+}
+
+async function postInternalNote(ticketId) {
+  const textarea = document.getElementById('noteText-' + ticketId);
+  const statusDiv = document.getElementById('noteStatus-' + ticketId);
+  const note = (textarea.value || '').trim();
+  if (!note) { statusDiv.innerHTML = '<span style="color:var(--accent)">Please write a note first</span>'; return; }
+
+  statusDiv.innerHTML = '<span class="loader-sm"></span> Posting...';
+  try {
+    const resp = await fetch('/api/add-internal-note', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ticket_id: ticketId, note: note}),
+    });
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+    if (data.ok) {
+      statusDiv.innerHTML = '<span style="color:#4caf50">Note posted successfully</span>';
+      textarea.value = '';
+      setTimeout(() => { statusDiv.innerHTML = ''; }, 3000);
+    } else {
+      statusDiv.innerHTML = '<span style="color:#f44336">Error: ' + esc(data.error || 'Unknown') + '</span>';
+    }
+  } catch(e) {
+    statusDiv.innerHTML = '<span style="color:#f44336">Failed: ' + esc(e.message) + '</span>';
+  }
 }
 
 function closeDetail() {
@@ -3130,6 +3166,50 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 # Invalidate cache so next load picks up the new note
                 _cache["timestamp"] = 0
                 self.wfile.write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
+        elif self.path == '/api/add-internal-note':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+            except Exception:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                return
+
+            ticket_id = str(data.get("ticket_id", "")).strip()
+            note_text = str(data.get("note", "")).strip()
+
+            if not ticket_id or not note_text:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "ticket_id and note required"}).encode())
+                return
+
+            # Post as internal note on the Gorgias ticket
+            import html as html_mod
+            safe_text = html_mod.escape(note_text).replace("\n", "<br>")
+            note_body = f"<b>[Dashboard Note]</b><br>{safe_text}"
+            result = gorgias_post(f"tickets/{ticket_id}/messages", {
+                "channel": "internal-note",
+                "via": "api",
+                "source": {"type": "internal-note", "from": {"name": "UK Returns Dashboard"}},
+                "sender": {"email": GORGIAS_EMAIL},
+                "body_html": note_body,
+            })
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+
+            if "error" in result:
+                self.wfile.write(json.dumps({"ok": False, "error": result["error"]}).encode())
+            else:
+                _cache["timestamp"] = 0
+                self.wfile.write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
+
         elif self.path == '/api/set-return-stage':
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)
