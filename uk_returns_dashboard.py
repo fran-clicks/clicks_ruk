@@ -27,7 +27,7 @@ import io
 import secrets
 import hashlib
 import http.cookies
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Optional image processing support
 try:
