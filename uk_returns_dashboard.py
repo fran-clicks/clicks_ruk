@@ -2735,9 +2735,15 @@ async function setReturnStage(ticketId, stageIndex, stageKey, stageLabel) {
     if (resp.status === 401) { window.location.href = '/login'; return; }
     const data = await resp.json();
     if (data.ok) {
-      // Refresh ticket data and reopen detail
+      // Update timeline locally for instant feedback
+      const ticket = allTickets.find(x => x.id === ticketId);
+      if (ticket && ticket.timeline) {
+        ticket.timeline.forEach((s, i) => { s.done = i <= stageIndex; });
+        filterTickets();  // re-render list with updated timeline
+        openDetail(ticketId);  // re-render detail panel
+      }
+      // Also trigger background refresh for full data sync
       loadTickets();
-      setTimeout(() => openDetail(ticketId), 2000);
     } else {
       alert('Error: ' + (data.error || 'Unknown'));
     }
