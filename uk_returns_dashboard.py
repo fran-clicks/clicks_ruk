@@ -2653,6 +2653,14 @@ function openDetail(id) {
     <div class="detail-section">
       <h3>Attached Images (${(t.images||[]).length})</h3>
       ${imagesHtml}
+      <div style="margin-top:8px">
+        <label style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--accent);color:#fff;border-radius:6px;cursor:pointer;font-size:13px">
+          &#x2b; Upload Image
+          <input type="file" accept="image/*" onchange="uploadImageNote('${t.id}', this)" style="display:none">
+        </label>
+        <div id="uploadStatus-${t.id}" style="margin-top:6px;font-size:12px"></div>
+        <div id="uploadPreview-${t.id}" style="margin-top:6px"></div>
+      </div>
     </div>
 
     <div class="detail-section">
@@ -2743,6 +2751,44 @@ async function fetchTrackingAnalysis(ticketId, trackingNumbers) {
   }
 
   container.innerHTML = html || '<div style="color:var(--text-dim);font-size:13px">No results</div>';
+}
+
+async function uploadImageNote(ticketId, input) {
+  const statusDiv = document.getElementById('uploadStatus-' + ticketId);
+  const previewDiv = document.getElementById('uploadPreview-' + ticketId);
+  const file = input.files && input.files[0];
+  if (!file) return;
+
+  // Show preview
+  const previewUrl = URL.createObjectURL(file);
+  previewDiv.innerHTML = `<img src="${previewUrl}" style="max-width:120px;max-height:120px;border-radius:6px;border:1px solid var(--border)">`;
+
+  // Read as base64
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    const base64 = e.target.result; // data:image/...;base64,...
+    statusDiv.innerHTML = '<span class="loader-sm"></span> Uploading to Gorgias...';
+    try {
+      const resp = await fetch('/api/upload-image-note', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ticket_id: ticketId, image_data: base64, filename: file.name}),
+      });
+      if (resp.status === 401) { window.location.href = '/login'; return; }
+      const data = await resp.json();
+      if (data.ok) {
+        statusDiv.innerHTML = '<span style="color:#4caf50">Image posted as internal note</span>';
+        previewDiv.innerHTML = '';
+        input.value = '';
+        setTimeout(() => { statusDiv.innerHTML = ''; }, 3000);
+      } else {
+        statusDiv.innerHTML = '<span style="color:#f44336">Error: ' + esc(data.error || 'Unknown') + '</span>';
+      }
+    } catch(e) {
+      statusDiv.innerHTML = '<span style="color:#f44336">Failed: ' + esc(e.message) + '</span>';
+    }
+  };
+  reader.readAsDataURL(file);
 }
 
 async function postInternalNote(ticketId) {
@@ -3193,6 +3239,51 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             import html as html_mod
             safe_text = html_mod.escape(note_text).replace("\n", "<br>")
             note_body = f"<b>[Dashboard Note]</b><br>{safe_text}"
+            result = gorgias_post(f"tickets/{ticket_id}/messages", {
+                "channel": "internal-note",
+                "via": "api",
+                "source": {"type": "internal-note", "from": {"name": "UK Returns Dashboard"}},
+                "sender": {"email": GORGIAS_EMAIL},
+                "body_html": note_body,
+            })
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+
+            if "error" in result:
+                self.wfile.write(json.dumps({"ok": False, "error": result["error"]}).encode())
+            else:
+                _cache["timestamp"] = 0
+                self.wfile.write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
+
+        elif self.path == '/api/upload-image-note':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+            except Exception:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                return
+
+            ticket_id = str(data.get("ticket_id", "")).strip()
+            image_data = str(data.get("image_data", "")).strip()
+            filename = str(data.get("filename", "image.png")).strip()
+
+            if not ticket_id or not image_data:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "ticket_id and image_data required"}).encode())
+                return
+
+            # Post image as internal note with embedded base64 image
+            import html as html_mod
+            safe_name = html_mod.escape(filename)
+            note_body = f'<b>[Dashboard Upload]</b> {safe_name}<br><img src="{image_data}" style="max-width:600px">'
             result = gorgias_post(f"tickets/{ticket_id}/messages", {
                 "channel": "internal-note",
                 "via": "api",
