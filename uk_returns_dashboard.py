@@ -2278,17 +2278,18 @@ function renderStock() {
   document.getElementById('stockBrandNew').textContent = totalNew;
   document.getElementById('stockNonPristine').textContent = totalUsed;
 
+  function stockColor(v) { return v < 10 ? '#f44336' : v <= 25 ? '#ffc107' : '#4caf50'; }
   body.innerHTML = filtered.map((s, i) => {
     const idx = stockData.indexOf(s);
     const total = (s.brand_new||0) + (s.non_pristine||0) + (s.damaged||0) + (s.founders||0);
     return `<tr>
       <td class="sku">${esc(s.sku)}</td>
       <td>${esc(s.description)}</td>
-      <td class="num">${s.brand_new||0}</td>
-      <td class="num">${s.non_pristine||0}</td>
-      <td class="num">${s.damaged||0}</td>
-      <td class="num">${s.founders||0}</td>
-      <td class="num total-val">${total}</td>
+      <td class="num" style="color:${stockColor(s.brand_new||0)}">${s.brand_new||0}</td>
+      <td class="num" style="color:${stockColor(s.non_pristine||0)}">${s.non_pristine||0}</td>
+      <td class="num" style="color:${stockColor(s.damaged||0)}">${s.damaged||0}</td>
+      <td class="num" style="color:${stockColor(s.founders||0)}">${s.founders||0}</td>
+      <td class="num total-val" style="color:${stockColor(total)}">${total}</td>
       <td><div class="stock-actions">
         <button class="stock-btn" onclick="editStock(${idx})" title="Edit">&#9998;</button>
         <button class="stock-btn delete" onclick="deleteStock(${idx})" title="Delete">&#x2715;</button>
