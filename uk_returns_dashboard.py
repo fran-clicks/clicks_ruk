@@ -1970,6 +1970,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     white-space: nowrap;
   }
   .timeline-label.done { color: var(--green); font-weight: 600; }
+  .timeline-step.clickable { cursor: pointer; }
+  .timeline-step.clickable:hover .timeline-dot { box-shadow: 0 0 0 3px rgba(108,92,231,0.4); }
+  .timeline-step.clickable:hover .timeline-label { color: var(--accent-light); }
   .timeline-line {
     position: absolute;
     top: 11px;
@@ -2544,16 +2547,17 @@ function openDetail(id) {
     </div>
 
     <div class="detail-section">
-      <h3>Return Progress</h3>
+      <h3>Return Progress <span style="font-size:11px;font-weight:400;color:var(--text-dim);text-transform:none;letter-spacing:0">(click a stage to set)</span></h3>
       <div class="timeline">
         ${(t.timeline||[]).map((s, i) => `
-          <div class="timeline-step">
+          <div class="timeline-step clickable" onclick="setReturnStage(${t.id}, ${i}, '${s.key}', '${esc(s.label)}')">
             ${i < (t.timeline||[]).length - 1 ? '<div class="timeline-line' + (s.done && (t.timeline||[])[i+1]?.done ? ' done' : '') + '"></div>' : ''}
             <div class="timeline-dot${s.done ? ' done' : ''}">${s.done ? '&#10003;' : ''}</div>
             <div class="timeline-label${s.done ? ' done' : ''}">${esc(s.label)}</div>
           </div>
         `).join('')}
       </div>
+      ${(t.custom_fields||{})['Country'] ? `<div style="margin-top:12px;font-size:13px;color:var(--text-dim)">Location: <span style="color:var(--text)">${esc((t.custom_fields||{})['Country'])}</span></div>` : ''}
     </div>
 
     <div class="detail-section">
@@ -2704,6 +2708,42 @@ function closeDetail() {
 function openLightbox(url) {
   document.getElementById('lightboxImg').src = url;
   document.getElementById('lightbox').classList.add('open');
+}
+
+const STAGE_NAMES = ['Initiated', 'Sent', 'Received', 'Inspected', 'Processed'];
+
+async function setReturnStage(ticketId, stageIndex, stageKey, stageLabel) {
+  // Build confirmation message
+  const t = allTickets.find(x => x.id === ticketId);
+  const currentStages = (t?.timeline || []).filter(s => s.done).map(s => s.label);
+  const targetStages = STAGE_NAMES.slice(0, stageIndex + 1);
+  const removedStages = currentStages.filter(s => !targetStages.includes(s));
+
+  let msg = 'Set return progress to "' + stageLabel + '"?\n\n';
+  msg += 'Tags to set: ' + targetStages.join(' → ') + '\n';
+  if (removedStages.length) {
+    msg += 'Tags to remove: ' + removedStages.join(', ');
+  }
+  if (!confirm(msg)) return;
+
+  try {
+    const resp = await fetch('/api/set-return-stage', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ticket_id: ticketId, stage_index: stageIndex}),
+    });
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+    if (data.ok) {
+      // Refresh ticket data and reopen detail
+      loadTickets();
+      setTimeout(() => openDetail(ticketId), 2000);
+    } else {
+      alert('Error: ' + (data.error || 'Unknown'));
+    }
+  } catch (e) {
+    alert('Failed: ' + e.message);
+  }
 }
 
 async function removeTicket(ticketId) {
@@ -3050,6 +3090,95 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 # Invalidate cache so next load picks up the new note
                 _cache["timestamp"] = 0
                 self.wfile.write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
+        elif self.path == '/api/set-return-stage':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+            except Exception:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                return
+
+            ticket_id = str(data.get("ticket_id", "")).strip()
+            stage_index = data.get("stage_index", -1)
+
+            if not ticket_id or not isinstance(stage_index, int) or stage_index < 0 or stage_index >= len(RETURN_TIMELINE_STAGES):
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": "Invalid ticket ID or stage"}).encode())
+                return
+
+            # Fetch current ticket tags
+            ticket = gorgias_request(f"tickets/{ticket_id}")
+            if not isinstance(ticket, dict) or ticket.get("error"):
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket.get('error', '')}"}).encode())
+                return
+
+            current_tags = ticket.get("tags") or []
+            # Build set of all return stage tags
+            stage_tags = {s["tag"] for s in RETURN_TIMELINE_STAGES}
+            # Tags to ADD: all stages up to and including the target
+            tags_to_add = {RETURN_TIMELINE_STAGES[i]["tag"] for i in range(stage_index + 1)}
+            # Tags to REMOVE: any stage tags beyond the target
+            tags_to_remove = {RETURN_TIMELINE_STAGES[i]["tag"] for i in range(stage_index + 1, len(RETURN_TIMELINE_STAGES))}
+
+            # Build new tag list: keep non-stage tags + add correct stage tags
+            new_tags = []
+            seen = set()
+            for t in current_tags:
+                if not isinstance(t, dict):
+                    continue
+                tname = t.get("name", "")
+                tname_lower = tname.lower()
+                if tname_lower in tags_to_remove:
+                    continue  # Remove advanced stage tags
+                if tname_lower in stage_tags:
+                    seen.add(tname_lower)
+                new_tags.append({"name": tname})
+
+            # Add any missing stage tags up to target
+            for tag in tags_to_add:
+                if tag not in seen:
+                    new_tags.append({"name": tag.title()})
+
+            # PUT updated tags to Gorgias
+            tag_url = f"{BASE_URL}/tickets/{ticket_id}"
+            tag_body = json.dumps({"tags": new_tags}).encode()
+            credentials = base64.b64encode(f"{GORGIAS_EMAIL}:{GORGIAS_API_KEY}".encode()).decode()
+            req = urllib.request.Request(tag_url, data=tag_body, method="PUT")
+            req.add_header("Authorization", f"Basic {credentials}")
+            req.add_header("Content-Type", "application/json")
+            req.add_header("User-Agent", "ClicksDashboard/1.0")
+
+            ctx = ssl.create_default_context()
+            try:
+                with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+                    resp_data = json.loads(resp.read().decode())
+                _cache["timestamp"] = 0  # Invalidate cache
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                stage_label = RETURN_TIMELINE_STAGES[stage_index]["label"]
+                self.wfile.write(json.dumps({"ok": True, "message": f"Return progress set to {stage_label}"}).encode())
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode() if e.fp else ""
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": f"Failed: HTTP {e.code} {err_body[:200]}"}).encode())
+            except Exception as e:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+
         elif self.path == '/api/add-ticket':
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)
