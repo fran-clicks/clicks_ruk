@@ -79,25 +79,58 @@ def _save_stock(data):
 _sessions = {}
 SESSION_TTL = 86400 * 7  # 7 days
 
+# Activity log
+ACTIVITY_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "activity_log.json")
 
-def _create_session():
+def _load_activity_log():
+    try:
+        with open(ACTIVITY_LOG_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def _save_activity_log(log):
+    try:
+        with open(ACTIVITY_LOG_FILE, "w") as f:
+            json.dump(log[-500:], f)  # keep last 500 entries
+    except Exception:
+        pass
+
+def _add_activity(user, action, details=""):
+    log = _load_activity_log()
+    log.append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "user": user,
+        "action": action,
+        "details": details,
+    })
+    _save_activity_log(log)
+
+
+def _create_session(username=""):
     token = secrets.token_hex(32)
-    _sessions[token] = time.time() + SESSION_TTL
+    _sessions[token] = {"expires": time.time() + SESSION_TTL, "username": username}
     return token
 
 
 def _validate_session(token):
     if not token or token not in _sessions:
         return False
-    if time.time() > _sessions[token]:
+    if time.time() > _sessions[token]["expires"]:
         del _sessions[token]
         return False
     return True
 
 
+def _get_session_username(token):
+    if not token or token not in _sessions:
+        return "Unknown"
+    return _sessions[token].get("username", "Unknown")
+
+
 def _cleanup_sessions():
     now = time.time()
-    expired = [t for t, exp in _sessions.items() if now > exp]
+    expired = [t for t, data in _sessions.items() if now > data["expires"]]
     for t in expired:
         del _sessions[t]
 
@@ -559,6 +592,104 @@ def get_cached_tickets(force_refresh=False):
     # Trigger background fetch, return immediately
     threading.Thread(target=_background_fetch, daemon=True).start()
     return {"tickets": _cache["enriched"], "error": None, "cached": True, "loading": not _cache["enriched"]}
+
+
+# ─── WARRANTY CACHE ──────────────────────────────────────────────────────────
+_warranty_cache = {"tickets": [], "enriched": [], "timestamp": 0, "loading": False, "error": None}
+WARRANTY_TAG_FILTER = "uk warranty"
+
+
+def fetch_all_warranty_tickets():
+    """Fetch tickets with the 'UK Warranty' tag using Gorgias tag search."""
+    all_tickets = []
+    cursor = None
+    page = 0
+
+    while page < MAX_PAGES:
+        params = {"limit": PAGE_SIZE, "order_by": "updated_datetime:desc"}
+        if cursor:
+            params["cursor"] = cursor
+
+        data = gorgias_request("tickets", params)
+        if "error" in data:
+            if all_tickets:
+                print(f"  Warning: API error on page {page+1}, returning {len(all_tickets)} warranty tickets found so far")
+                break
+            return {"error": data["error"], "tickets": []}
+
+        tickets = data.get("data", [])
+        if not isinstance(tickets, list) or not tickets:
+            break
+
+        for t in tickets:
+            if not isinstance(t, dict):
+                continue
+            raw_tags = t.get("tags") or []
+            tag_names = []
+            for tag in raw_tags:
+                if isinstance(tag, dict):
+                    tag_names.append(tag.get("name", "").strip().lower())
+            if any(WARRANTY_TAG_FILTER.lower() in tn for tn in tag_names):
+                all_tickets.append(t)
+
+        cursor = data.get("meta", {}).get("next_cursor")
+        page += 1
+        if not cursor:
+            break
+
+        time.sleep(API_DELAY)
+
+    print(f"  Found {len(all_tickets)} warranty-tagged tickets across {page} page(s)")
+    return {"tickets": all_tickets, "error": None}
+
+
+def _background_fetch_warranties():
+    """Fetch and enrich warranty tickets in background thread."""
+    if _warranty_cache["loading"]:
+        return
+    _warranty_cache["loading"] = True
+    try:
+        print("[Fetch] Starting warranty ticket fetch from Gorgias...")
+        result = fetch_all_warranty_tickets()
+        if result.get("error") and not result.get("tickets"):
+            _warranty_cache["error"] = result.get("error")
+            print(f"[Fetch] Warranty error: {_warranty_cache['error']}")
+            return
+
+        enriched = []
+        total = len(result["tickets"])
+        for i, ticket in enumerate(result["tickets"]):
+            print(f"  Enriching warranty ticket {i+1}/{total}...")
+            summary = extract_ticket_details(ticket)
+            summary = enrich_with_messages(summary)
+            enriched.append(summary)
+            if i < total - 1:
+                time.sleep(0.5)
+
+        _warranty_cache["enriched"] = enriched
+        _warranty_cache["timestamp"] = time.time()
+        _warranty_cache["error"] = None
+        print(f"[Fetch] Done — {len(enriched)} warranty tickets loaded")
+    except Exception as e:
+        _warranty_cache["error"] = str(e)
+        print(f"[Fetch] Warranty exception: {e}")
+    finally:
+        _warranty_cache["loading"] = False
+
+
+def get_cached_warranty_tickets(force_refresh=False):
+    """Return cached warranty tickets immediately. Triggers background refresh if stale."""
+    now = time.time()
+    cache_valid = _warranty_cache["enriched"] and (now - _warranty_cache["timestamp"]) < CACHE_TTL
+
+    if not force_refresh and cache_valid:
+        return {"tickets": _warranty_cache["enriched"], "error": None, "cached": True}
+
+    if _warranty_cache["loading"]:
+        return {"tickets": _warranty_cache["enriched"], "error": None, "cached": True, "loading": True}
+
+    threading.Thread(target=_background_fetch_warranties, daemon=True).start()
+    return {"tickets": _warranty_cache["enriched"], "error": None, "cached": True, "loading": not _warranty_cache["enriched"]}
 
 
 # Return timeline stages — order matters, each triggered by a Gorgias tag
@@ -1308,7 +1439,8 @@ LOGIN_HTML = r"""<!DOCTYPE html>
   <p>Enter the team password to access the dashboard</p>
   <div class="error" id="errorMsg">Incorrect password</div>
   <form onsubmit="doLogin(event)">
-    <input type="password" id="pwd" placeholder="Password" autofocus autocomplete="current-password">
+    <input type="text" id="username" placeholder="Your name" autocomplete="username" style="margin-bottom:10px">
+    <input type="password" id="pwd" placeholder="Password" autocomplete="current-password">
     <button type="submit" id="loginBtn">Sign in</button>
   </form>
 </div>
@@ -1323,7 +1455,7 @@ async function doLogin(e) {
     const resp = await fetch('/auth/login', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({password: document.getElementById('pwd').value}),
+      body: JSON.stringify({password: document.getElementById('pwd').value, username: document.getElementById('username').value.trim() || 'Unknown'}),
     });
     const data = await resp.json();
     if (data.ok) {
@@ -1475,6 +1607,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .ana-stage-bar { flex: 1; height: 20px; background: var(--border); border-radius: 4px; overflow: hidden; }
   .ana-stage-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
   .ana-stage-count { font-size: 12px; color: var(--text-dim); min-width: 30px; text-align: right; }
+
+  /* Activity log */
+  .activity-log-section { margin-top: 20px; }
+  .activity-log { max-height: 300px; overflow-y: auto; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; }
+  .activity-entry {
+    display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px;
+    border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  .activity-entry:last-child { border-bottom: none; }
+  .activity-time { color: var(--text-dim); font-size: 11px; min-width: 120px; white-space: nowrap; }
+  .activity-user { color: var(--accent-light); font-weight: 600; min-width: 70px; }
+  .activity-action { color: var(--text); }
+  .activity-details { color: var(--text-dim); margin-left: 4px; }
 
   /* Stock tab */
   .stock-summary {
@@ -2165,6 +2310,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <button class="tab-btn active" onclick="switchTab('returns',this)">UK Returns</button>
   <button class="tab-btn" onclick="switchTab('stock',this)">UK Stock</button>
   <button class="tab-btn" onclick="switchTab('analytics',this)">Analytics</button>
+  <button class="tab-btn" onclick="switchTab('warranties',this)">UK Warranties</button>
 </div>
 
 <!-- === RETURNS TAB === -->
@@ -2214,6 +2360,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="activity-log-section">
+  <h3 style="margin:16px 0 8px;font-size:14px;color:var(--text)">Activity Log</h3>
+  <div id="activityLogReturns" class="activity-log"></div>
+</div>
 </div><!-- end tab-returns -->
 
 <!-- === STOCK TAB === -->
@@ -2247,6 +2397,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <tbody id="stockBody"></tbody>
     </table>
   </div>
+<div class="activity-log-section">
+  <h3 style="margin:16px 0 8px;font-size:14px;color:var(--text)">Activity Log</h3>
+  <div id="activityLogStock" class="activity-log"></div>
+</div>
 </div><!-- end tab-stock -->
 
 <!-- === ANALYTICS TAB === -->
@@ -2294,6 +2448,59 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 </div><!-- end tab-analytics -->
 
+<!-- === WARRANTIES TAB === -->
+<div id="tab-warranties" class="tab-content">
+
+<div class="stats-bar">
+  <div class="stat-card total"><div class="label">Total Warranties</div><div class="value" id="wStatTotal">-</div></div>
+  <div class="stat-card open"><div class="label">Open</div><div class="value" id="wStatOpen">-</div></div>
+  <div class="stat-card closed"><div class="label">Closed</div><div class="value" id="wStatClosed">-</div></div>
+</div>
+
+<div class="search-section">
+  <div class="search-box">
+    <span class="search-icon">&#128269;</span>
+    <input type="text" id="wSearchInput" placeholder="Search by ticket #, tracking number, customer name or email..." oninput="filterWarrantyTickets()">
+    <button class="btn-add-ticket" onclick="toggleAddWarrantyTicket()" title="Add ticket to UK Warranties">+</button>
+  </div>
+  <div id="wAddTicketForm" style="display:none">
+    <div class="add-ticket-row">
+      <input type="text" id="wAddTicketInput" placeholder="Enter ticket ID (e.g. 12345 or #12345)" onkeydown="if(event.key==='Enter')submitAddWarrantyTicket()">
+      <button class="btn-sm btn-add" id="wAddTicketBtn" onclick="submitAddWarrantyTicket()">Add & Tag</button>
+    </div>
+    <div id="wAddTicketMsg"></div>
+  </div>
+</div>
+
+<div class="filters" id="wFilterBar">
+  <button class="filter-chip active" data-filter="all" onclick="setWarrantyFilter('all',this)">All</button>
+  <button class="filter-chip" data-filter="open" onclick="setWarrantyFilter('open',this)">Open</button>
+  <button class="filter-chip" data-filter="closed" onclick="setWarrantyFilter('closed',this)">Closed</button>
+</div>
+
+<div id="wErrorBanner" class="error-banner" style="display:none"></div>
+
+<div class="content">
+  <div id="wLoadingState" class="loading">
+    <div class="spinner"></div>
+    <div>Loading UK warranty tickets from Gorgias...</div>
+  </div>
+  <div id="wColHeaders" class="ticket-row col-headers" style="display:none">
+    <div>ID</div><div>Subject</div><div>Order</div><div>Product</div><div>Progress</div><div>Purchased</div><div>Customer</div><div>Updated</div><div>Status</div>
+  </div>
+  <div id="wTicketList" class="ticket-list" style="display:none"></div>
+  <div id="wEmptyState" class="empty-state" style="display:none">
+    <div class="icon">&#128270;</div>
+    <div>No matching tickets found</div>
+  </div>
+</div>
+
+<div class="activity-log-section">
+  <h3 style="margin:16px 0 8px;font-size:14px;color:var(--text)">Activity Log</h3>
+  <div id="activityLogWarranties" class="activity-log"></div>
+</div>
+</div><!-- end tab-warranties -->
+
 <!-- Stock Edit Modal -->
 <div class="stock-modal-overlay" id="stockModalOverlay" onclick="if(event.target===this)closeStockModal()">
   <div class="stock-modal">
@@ -2333,6 +2540,8 @@ let allTickets = [];
 let currentFilter = 'all';
 let stockData = [];
 let currentTab = 'returns';
+let warrantyTickets = [];
+let warrantyFilter = 'all';
 
 function switchTab(tab, btn) {
   currentTab = tab;
@@ -2341,12 +2550,15 @@ function switchTab(tab, btn) {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.add('active');
   if (tab === 'analytics') renderAnalytics();
+  if (tab === 'warranties') loadWarrantyTickets();
 }
 
 function refreshCurrentTab() {
   if (currentTab === 'returns') loadTickets();
   else if (currentTab === 'stock') loadStock();
   else if (currentTab === 'analytics') renderAnalytics();
+  else if (currentTab === 'warranties') loadWarrantyTickets();
+  loadActivityLog();
 }
 
 // ============ STOCK MANAGEMENT ============
@@ -3304,9 +3516,490 @@ function renderAnalytics() {
   ).join('') : '<div style="color:var(--text-dim);font-size:13px">No warranty data recorded</div>';
 }
 
+// ============ ACTIVITY LOG ============
+async function loadActivityLog() {
+  try {
+    const resp = await fetch('/api/activity-log');
+    if (resp.status === 401) return;
+    const data = await resp.json();
+    const log = data.log || [];
+
+    const stockActions = ['Added stock item', 'Updated stock item', 'Deleted stock item'];
+    const returnsLog = log.filter(e => !stockActions.includes(e.action));
+    const stockLog = log.filter(e => stockActions.includes(e.action));
+
+    renderActivityEntries('activityLogReturns', returnsLog.slice(0, 30));
+    renderActivityEntries('activityLogStock', stockLog.slice(0, 30));
+    renderActivityEntries('activityLogWarranties', returnsLog.slice(0, 30));
+  } catch(e) {}
+}
+
+function renderActivityEntries(containerId, entries) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!entries.length) {
+    el.innerHTML = '<div style="padding:14px;color:var(--text-dim);font-size:13px">No activity yet</div>';
+    return;
+  }
+  el.innerHTML = entries.map(e => {
+    const d = new Date(e.timestamp);
+    const time = d.toLocaleDateString('en-GB', {day:'2-digit',month:'short'}) + ' ' +
+                 d.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'});
+    return `<div class="activity-entry">
+      <span class="activity-time">${esc(time)}</span>
+      <span class="activity-user">${esc(e.user)}</span>
+      <span class="activity-action">${esc(e.action)}<span class="activity-details">${e.details ? ' — ' + esc(e.details) : ''}</span></span>
+    </div>`;
+  }).join('');
+}
+
+// ============ WARRANTY FUNCTIONS ============
+async function loadWarrantyTickets() {
+  const btn = document.getElementById('refreshBtn');
+  const loading = document.getElementById('wLoadingState');
+  const list = document.getElementById('wTicketList');
+  const empty = document.getElementById('wEmptyState');
+  const errBanner = document.getElementById('wErrorBanner');
+  const colHeaders = document.getElementById('wColHeaders');
+
+  btn.disabled = true;
+  btn.textContent = 'Loading...';
+  loading.style.display = 'block';
+  list.style.display = 'none';
+  colHeaders.style.display = 'none';
+  empty.style.display = 'none';
+  errBanner.style.display = 'none';
+
+  try {
+    const isRefresh = warrantyTickets.length > 0;
+    const resp = await fetch('/api/warranty-tickets' + (isRefresh ? '?refresh=1' : ''));
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+
+    if (data.error) {
+      errBanner.textContent = 'API Error: ' + data.error;
+      errBanner.style.display = 'block';
+      loading.style.display = 'none';
+      btn.disabled = false;
+      btn.textContent = 'Refresh';
+      return;
+    }
+
+    if (data.loading && (!data.tickets || data.tickets.length === 0)) {
+      loading.querySelector('div:last-child').textContent = 'Server is fetching warranty tickets from Gorgias... retrying in 5s';
+      setTimeout(() => loadWarrantyTickets(), 5000);
+      return;
+    }
+
+    warrantyTickets = data.tickets || [];
+    updateWarrantyStats();
+    filterWarrantyTickets();
+    document.getElementById('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    if (e.message && e.message.includes('pattern')) {
+      loading.querySelector('div:last-child').textContent = 'Server is starting up... retrying in 5s';
+      setTimeout(() => loadWarrantyTickets(), 5000);
+      return;
+    }
+    errBanner.textContent = 'Connection error: ' + e.message;
+    errBanner.style.display = 'block';
+  }
+
+  loading.style.display = 'none';
+  btn.disabled = false;
+  btn.textContent = 'Refresh';
+}
+
+function updateWarrantyStats() {
+  document.getElementById('wStatTotal').textContent = warrantyTickets.length;
+  document.getElementById('wStatOpen').textContent = warrantyTickets.filter(t => {
+    const tags = (t.tags || []).map(tag => tag.toLowerCase());
+    return tags.includes('uk warranty') && !tags.includes('return processed');
+  }).length;
+  document.getElementById('wStatClosed').textContent = warrantyTickets.filter(t => {
+    const tags = (t.tags || []).map(tag => tag.toLowerCase());
+    return tags.includes('return processed');
+  }).length;
+}
+
+function setWarrantyFilter(filter, chip) {
+  warrantyFilter = filter;
+  document.querySelectorAll('#wFilterBar .filter-chip').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active');
+  filterWarrantyTickets();
+}
+
+function filterWarrantyTickets() {
+  const query = document.getElementById('wSearchInput').value.toLowerCase().trim();
+  const list = document.getElementById('wTicketList');
+  const empty = document.getElementById('wEmptyState');
+  const colHeaders = document.getElementById('wColHeaders');
+
+  let filtered = warrantyTickets;
+
+  if (warrantyFilter === 'open') {
+    filtered = filtered.filter(t => {
+      const tags = (t.tags || []).map(tag => tag.toLowerCase());
+      return tags.includes('uk warranty') && !tags.includes('return processed');
+    });
+  } else if (warrantyFilter === 'closed') {
+    filtered = filtered.filter(t => {
+      const tags = (t.tags || []).map(tag => tag.toLowerCase());
+      return tags.includes('return processed');
+    });
+  }
+
+  if (query) {
+    filtered = filtered.filter(t => {
+      const searchable = [
+        String(t.id),
+        t.subject,
+        t.customer_name,
+        t.customer_email,
+        ...(t.tracking_numbers || []),
+        ...(t.device_info || []),
+        ...(t.issues || []),
+        ...(t.order_numbers || []),
+        t.ocr_text || '',
+        t.full_text || '',
+        ...Object.values(t.custom_fields || {}),
+      ].join(' ').toLowerCase();
+      return searchable.includes(query);
+    });
+  }
+
+  if (filtered.length === 0) {
+    list.style.display = 'none';
+    colHeaders.style.display = 'none';
+    empty.style.display = 'block';
+    return;
+  }
+
+  empty.style.display = 'none';
+  colHeaders.style.display = 'grid';
+  list.style.display = 'flex';
+  list.innerHTML = filtered.map(t => `
+    <div class="ticket-row" onclick="openWarrantyDetail(${t.id})">
+      <div class="ticket-id">#${t.id}</div>
+      <div class="ticket-subject">${esc(t.subject)}</div>
+      <div class="ticket-id" style="font-size:12px">${(t.order_numbers||[]).join(', ') || '-'}</div>
+      <div class="ticket-product">${(function(){
+        const cf = t.custom_fields || {};
+        const m = cf['Model'] || cf['model'] || '';
+        const c = cf['Colour'] || cf['colour'] || cf['Color'] || cf['color'] || '';
+        const p = [m, c].filter(Boolean).join(' - ');
+        if (p) return esc(p);
+        const di = t.device_info || [];
+        if (di.length) return di.map(d => esc(d)).join(', ');
+        return '-';
+      })()}</div>
+      <div class="timeline-compact" title="${(t.timeline||[]).filter(s=>s.done).map(s=>s.label).join(' → ') || 'No progress'}">
+        ${(t.timeline||[]).map((s,i) => {
+          const pip = '<span class="timeline-pip' + (s.done ? ' done' : '') + '" title="' + esc(s.label) + '"></span>';
+          const line = i < (t.timeline||[]).length - 1 ? '<span class="timeline-pip-line' + (s.done && (t.timeline||[])[i+1]?.done ? ' done' : '') + '"></span>' : '';
+          return pip + line;
+        }).join('')}
+      </div>
+      <div class="ticket-date" style="color:${purchaseDateColor(t.shopify?.order_date)}">${t.shopify?.order_date ? formatDate(t.shopify.order_date) : '-'}</div>
+      <div class="ticket-customer">${esc(t.customer_name)}</div>
+      <div class="ticket-date">${formatDate(t.updated)}</div>
+      <div><span class="status-badge status-${t.status}">${t.status}</span></div>
+    </div>
+  `).join('');
+}
+
+function openWarrantyDetail(id) {
+  const t = warrantyTickets.find(x => x.id === id);
+  if (!t) return;
+
+  const panel = document.getElementById('detailPanel');
+  const trackingHtml = (t.tracking_numbers || []).length
+    ? t.tracking_numbers.map(n => `<span class="tag">${esc(n)}</span>`).join('')
+    : '<span style="color:var(--text-dim)">None detected</span>';
+
+  const cf = t.custom_fields || {};
+  const cfModel = cf['Model'] || cf['model'] || '';
+  const cfColour = cf['Colour'] || cf['colour'] || cf['Color'] || cf['color'] || '';
+  const cfProduct = [cfModel, cfColour].filter(Boolean).join(' - ');
+  const productParts = cfProduct ? [cfProduct] : [...(t.device_info || [])];
+  const deviceHtml = productParts.length
+    ? productParts.map(d => `<span class="tag">${esc(d)}</span>`).join('')
+    : '<span style="color:var(--text-dim)">None detected</span>';
+
+  const customFieldsHtml = Object.entries(t.custom_fields || {}).map(([k, v]) =>
+    `<div class="detail-row"><span class="label">${esc(k)}</span><span class="value">${esc(String(v))}</span></div>`
+  ).join('') || '<div style="color:var(--text-dim);font-size:13px">No custom fields</div>';
+
+  const tagsHtml = (t.tags || []).map(tag => `<span class="tag">${esc(tag)}</span>`).join('');
+
+  const issuesHtml = (t.issues || []).length
+    ? t.issues.map(i => `<span class="issue-tag">${esc(i)}</span>`).join('')
+    : '<span style="color:var(--text-dim)">None detected</span>';
+
+  const ordersHtml = (t.order_numbers || []).length
+    ? t.order_numbers.map(o => `<span class="tag order-num">${esc(o)}</span>`).join('')
+    : '<span style="color:var(--text-dim)">None found</span>';
+
+  const imagesHtml = (t.images || []).length
+    ? `<div class="image-grid" id="imageGrid-${t.id}">${t.images.map(img =>
+        `<img src="${esc(img.url)}" alt="${esc(img.name)}" title="${esc(img.name)}" onclick="event.stopPropagation();openLightbox('${img.url.replace(/'/g, "\\\\'")}')" loading="lazy">`
+      ).join('')}</div>`
+    : `<div id="imageGrid-${t.id}" class="image-grid" style="display:none"></div><span id="noImages-${t.id}" style="color:var(--text-dim)">No images attached</span>`;
+
+  panel.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <button class="btn-remove-ticket" onclick="removeWarrantyTicket(${t.id})">Remove from UK Warranties</button>
+      <button class="detail-close" onclick="closeDetail()">&times;</button>
+    </div>
+    <div class="detail-header">
+      <h2>${esc(t.subject)}</h2>
+      <span class="status-badge status-${t.status}">${t.status}</span>
+    </div>
+
+    <div class="detail-section">
+      <h3>Return Progress <span style="font-size:11px;font-weight:400;color:var(--text-dim);text-transform:none;letter-spacing:0">(click a stage to set)</span></h3>
+      <div class="timeline">
+        ${(t.timeline||[]).map((s, i) => `
+          <div class="timeline-step clickable" onclick="setWarrantyReturnStage(${t.id}, ${i}, '${s.key}', '${esc(s.label)}')">
+            ${i < (t.timeline||[]).length - 1 ? '<div class="timeline-line' + (s.done && (t.timeline||[])[i+1]?.done ? ' done' : '') + '"></div>' : ''}
+            <div class="timeline-dot${s.done ? ' done' : ''}">${s.done ? '&#10003;' : ''}</div>
+            <div class="timeline-label${s.done ? ' done' : ''}">${esc(s.label)}</div>
+          </div>
+        `).join('')}
+      </div>
+      ${(t.custom_fields||{})['Country'] ? `<div style="margin-top:12px;font-size:13px;color:var(--text-dim)">Location: <span style="color:var(--text)">${esc((t.custom_fields||{})['Country'])}</span></div>` : ''}
+    </div>
+
+    <div class="detail-section">
+      <h3>Customer</h3>
+      <div class="detail-row"><span class="label">Name</span><span class="value">${esc(t.customer_name)}</span></div>
+      <div class="detail-row"><span class="label">Email</span><span class="value">${esc(t.customer_email)}</span></div>
+      ${(t.customer_data||{}).nb_tickets ? `<div class="detail-row"><span class="label">Total Tickets</span><span class="value">${t.customer_data.nb_tickets}</span></div>` : ''}
+      ${t.shopify?.shipping_address ? `<div class="detail-row"><span class="label">Location</span><span class="value">${esc(t.shopify.shipping_address)}</span></div>` : ''}
+      ${(t.customer_data||{}).note ? `<div class="detail-row"><span class="label">Note</span><span class="value">${esc(t.customer_data.note)}</span></div>` : ''}
+    </div>
+
+    <div class="detail-section">
+      <h3>Order Info</h3>
+      <div class="tag-list">${ordersHtml}</div>
+      ${t.shopify?.order_date ? `<div class="detail-row" style="margin-top:8px"><span class="label">Purchase Date</span><span class="value" style="color:${purchaseDateColor(t.shopify.order_date)}">${formatDate(t.shopify.order_date)}</span></div>` : ''}
+      ${t.shopify?.total_price ? `<div class="detail-row"><span class="label">Order Total</span><span class="value">${esc(t.shopify.currency || '')} ${esc(t.shopify.total_price)}</span></div>` : ''}
+      ${t.shopify?.financial_status ? `<div class="detail-row"><span class="label">Payment</span><span class="value" style="text-transform:capitalize">${esc(t.shopify.financial_status)}</span></div>` : ''}
+      ${t.shopify?.fulfillment_status ? `<div class="detail-row"><span class="label">Fulfillment</span><span class="value" style="text-transform:capitalize">${esc(t.shopify.fulfillment_status)}</span></div>` : ''}
+    </div>
+
+    <div class="detail-section">
+      <h3>Warranty Details</h3>
+      <div class="detail-row"><span class="label">Ticket ID</span><span class="value">#${t.id}</span></div>
+      <div class="detail-row"><span class="label">Created</span><span class="value">${formatDate(t.created)}</span></div>
+      <div class="detail-row"><span class="label">Last Updated</span><span class="value">${formatDate(t.updated)}</span></div>
+      <div class="detail-row"><span class="label">Messages</span><span class="value">${t.messages_count}</span></div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Product / Device Returned</h3>
+      <div class="tag-list">${deviceHtml}</div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Reported Issue</h3>
+      <div class="tag-list">${issuesHtml}</div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Tracking Numbers <button class="btn-plus" onclick="toggleAddTracking(${t.id})" title="Add tracking manually">+</button></h3>
+      <div class="tag-list">${trackingHtml}</div>
+      ${t.ocr_text ? '<div class="ocr-badge" style="margin-top:6px">* includes codes extracted from images via OCR</div>' : ''}
+      <div id="addTrackingForm-${t.id}" style="display:none">
+        <div class="add-tracking-row">
+          <input type="text" id="trackingInput-${t.id}" placeholder="Enter tracking number..." onkeydown="if(event.key==='Enter')submitTracking(${t.id})">
+          <button class="btn-sm btn-add" id="trackingSubmit-${t.id}" onclick="submitTracking(${t.id})">Add & Post Note</button>
+        </div>
+        <div id="trackingMsg-${t.id}"></div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Tracking Analysis</h3>
+      <div id="trackingAnalysis-${t.id}">
+        ${(t.tracking_numbers || []).length
+          ? '<div style="color:var(--text-dim);font-size:13px"><span class="loader-sm"></span> Loading tracking status...</div>'
+          : '<div style="color:var(--text-dim);font-size:13px">No tracking numbers to analyse</div>'}
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Attached Images (${(t.images||[]).length})</h3>
+      ${imagesHtml}
+      <div style="margin-top:8px">
+        <label style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--accent);color:#fff;border-radius:6px;cursor:pointer;font-size:13px">
+          &#x2b; Upload Image
+          <input type="file" accept="image/*" onchange="uploadImageNote('${t.id}', this)" style="display:none">
+        </label>
+        <div id="uploadStatus-${t.id}" style="margin-top:6px;font-size:12px"></div>
+        <div id="uploadPreview-${t.id}" style="margin-top:6px"></div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Add Internal Note</h3>
+      <div id="internalNoteForm-${t.id}">
+        <textarea id="noteText-${t.id}" placeholder="Write an internal note..." style="width:100%;min-height:70px;background:var(--card-bg);color:var(--text-main);border:1px solid var(--border);border-radius:6px;padding:8px;font-size:13px;resize:vertical;font-family:inherit"></textarea>
+        <button onclick="postInternalNote('${t.id}')" style="margin-top:6px;padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">Post Note</button>
+        <div id="noteStatus-${t.id}" style="margin-top:6px;font-size:12px"></div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Tags</h3>
+      <div class="tag-list">${tagsHtml}</div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Custom Fields</h3>
+      ${customFieldsHtml}
+    </div>
+
+    ${t.latest_internal_note ? `
+    <div class="detail-section">
+      <h3>Latest Internal Note</h3>
+      <div class="note-box">${esc(t.latest_internal_note)}</div>
+    </div>` : ''}
+
+    <div class="detail-actions">
+      <a class="open-gorgias" href="${t.gorgias_url}" target="_blank">Open in Gorgias &#x2197;</a>
+    </div>
+  `;
+
+  document.getElementById('detailOverlay').classList.add('open');
+
+  if ((t.tracking_numbers || []).length) {
+    fetchTrackingAnalysis(t.id, t.tracking_numbers);
+  }
+}
+
+function toggleAddWarrantyTicket() {
+  const form = document.getElementById('wAddTicketForm');
+  if (form.style.display === 'none') {
+    form.style.display = 'block';
+    document.getElementById('wAddTicketInput').focus();
+  } else {
+    form.style.display = 'none';
+  }
+}
+
+async function submitAddWarrantyTicket() {
+  const input = document.getElementById('wAddTicketInput');
+  const btn = document.getElementById('wAddTicketBtn');
+  const msgDiv = document.getElementById('wAddTicketMsg');
+  let ticketId = input.value.trim().replace(/^#/, '');
+
+  if (!ticketId || !/^\d+$/.test(ticketId)) {
+    msgDiv.innerHTML = '<span style="color:var(--red);font-size:13px">Enter a valid ticket ID (numbers only)</span>';
+    input.focus();
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Adding...';
+  msgDiv.innerHTML = '';
+
+  try {
+    const resp = await fetch('/api/add-warranty-ticket', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ticket_id: ticketId}),
+    });
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+    if (data.ok) {
+      msgDiv.innerHTML = '<span style="color:var(--green);font-size:13px">Ticket #' + ticketId + ' tagged &amp; added! Refreshing...</span>';
+      input.value = '';
+      setTimeout(() => {
+        document.getElementById('wAddTicketForm').style.display = 'none';
+        msgDiv.innerHTML = '';
+        loadWarrantyTickets();
+      }, 1500);
+    } else {
+      msgDiv.innerHTML = '<span style="color:var(--red);font-size:13px">Error: ' + (data.error || 'Unknown error') + '</span>';
+    }
+  } catch (e) {
+    msgDiv.innerHTML = '<span style="color:var(--red);font-size:13px">Failed: ' + e.message + '</span>';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Add & Tag';
+}
+
+async function removeWarrantyTicket(ticketId) {
+  if (!confirm('Remove ticket #' + ticketId + ' from UK Warranties? This will remove the UK Warranty tag.')) return;
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Removing...';
+  try {
+    const resp = await fetch('/api/remove-warranty-ticket', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ticket_id: ticketId}),
+    });
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+    if (data.ok) {
+      closeDetail();
+      loadWarrantyTickets();
+    } else {
+      alert('Error: ' + (data.error || 'Unknown error'));
+      btn.disabled = false;
+      btn.textContent = 'Remove from UK Warranties';
+    }
+  } catch (e) {
+    alert('Failed: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Remove from UK Warranties';
+  }
+}
+
+async function setWarrantyReturnStage(ticketId, stageIndex, stageKey, stageLabel) {
+  const t = warrantyTickets.find(x => x.id === ticketId);
+  const currentStages = (t?.timeline || []).filter(s => s.done).map(s => s.label);
+  const targetStages = STAGE_NAMES.slice(0, stageIndex + 1);
+  const removedStages = currentStages.filter(s => !targetStages.includes(s));
+
+  let msg = 'Set warranty progress to "' + stageLabel + '"?\n\n';
+  msg += 'Tags to set: ' + targetStages.join(' → ') + '\n';
+  if (removedStages.length) {
+    msg += 'Tags to remove: ' + removedStages.join(', ');
+  }
+  if (!confirm(msg)) return;
+
+  try {
+    const resp = await fetch('/api/set-return-stage', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ticket_id: ticketId, stage_index: stageIndex}),
+    });
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+    if (data.ok) {
+      const ticket = warrantyTickets.find(x => x.id === ticketId);
+      if (ticket && ticket.timeline) {
+        ticket.timeline.forEach((s, i) => { s.done = i <= stageIndex; });
+        filterWarrantyTickets();
+        openWarrantyDetail(ticketId);
+      }
+      loadWarrantyTickets();
+    } else {
+      alert('Error: ' + (data.error || 'Unknown'));
+    }
+  } catch (e) {
+    alert('Failed: ' + e.message);
+  }
+}
+
 // Load on start
 loadTickets();
 loadStock();
+loadActivityLog();
+// Don't load warranty tickets until tab is clicked
 </script>
 </body>
 </html>"""
@@ -3329,6 +4022,10 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
     def _is_authenticated(self):
         token = self._get_session_token()
         return _validate_session(token)
+
+    def _get_username(self):
+        token = self._get_session_token()
+        return _get_session_username(token)
 
     def _require_auth(self):
         """Returns True if request is authenticated, False if redirected to login."""
@@ -3385,6 +4082,16 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             result = get_cached_tickets(force_refresh=force)
             self.wfile.write(json.dumps(result).encode())
 
+        elif self.path in ('/api/warranty-tickets', '/api/warranty-tickets?refresh=1'):
+            force = 'refresh=1' in self.path
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+
+            result = get_cached_warranty_tickets(force_refresh=force)
+            self.wfile.write(json.dumps(result).encode())
+
         elif self.path.startswith('/api/ticket/'):
             ticket_id = self.path.split('/')[-1]
             self.send_response(200)
@@ -3404,6 +4111,20 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"stock": _load_stock()}).encode())
 
+        elif self.path == '/api/activity-log':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            log = _load_activity_log()
+            log.reverse()  # newest first
+            self.wfile.write(json.dumps({"log": log[:100]}).encode())
+
+        elif self.path == '/api/current-user':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"username": self._get_username()}).encode())
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -3419,9 +4140,11 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 data = {}
 
             password = data.get("password", "")
+            username = data.get("username", "Unknown").strip() or "Unknown"
             if password == DASHBOARD_PASSWORD:
                 _cleanup_sessions()
-                token = _create_session()
+                token = _create_session(username)
+                _add_activity(username, "Logged in")
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 secure_flag = "; Secure" if os.environ.get("RENDER") else ""
@@ -3523,6 +4246,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"ok": False, "error": result["error"]}).encode())
             else:
                 _cache["timestamp"] = 0
+                _add_activity(self._get_username(), "Posted internal note", f"Ticket {ticket_id}")
                 self.wfile.write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
 
         elif self.path == '/api/upload-image-note':
@@ -3568,6 +4292,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"ok": False, "error": result["error"]}).encode())
             else:
                 _cache["timestamp"] = 0
+                _add_activity(self._get_username(), "Uploaded image", f"Ticket {ticket_id} - {filename}")
                 self.wfile.write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
 
         elif self.path == '/api/set-return-stage':
@@ -3646,6 +4371,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 stage_label = RETURN_TIMELINE_STAGES[stage_index]["label"]
+                _add_activity(self._get_username(), "Changed return progress", f"Set ticket {ticket_id} to '{stage_label}'")
                 self.wfile.write(json.dumps({"ok": True, "message": f"Return progress set to {stage_label}"}).encode())
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode() if e.fp else ""
@@ -3724,6 +4450,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
+                _add_activity(self._get_username(), "Added ticket", f"Ticket {ticket_id} tagged with UK Return")
                 self.wfile.write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} tagged with UK Return"}).encode())
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode() if e.fp else ""
@@ -3787,7 +4514,141 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
+                _add_activity(self._get_username(), "Removed ticket", f"Ticket {ticket_id} removed from UK Returns")
                 self.wfile.write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} removed from UK Returns"}).encode())
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode() if e.fp else ""
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": f"Failed to remove tag: HTTP {e.code} {err_body[:200]}"}).encode())
+            except Exception as e:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+
+        elif self.path == '/api/add-warranty-ticket':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+            except Exception:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                return
+
+            ticket_id = str(data.get("ticket_id", "")).strip().lstrip("#")
+            if not ticket_id or not ticket_id.isdigit():
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Valid ticket ID required"}).encode())
+                return
+
+            ticket = gorgias_request(f"tickets/{ticket_id}")
+            if ticket.get("error"):
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket['error']}"}).encode())
+                return
+
+            current_tags = ticket.get("tags") or []
+            tag_names = [t.get("name", "").lower() for t in current_tags if isinstance(t, dict)]
+
+            if "uk warranty" in tag_names:
+                _warranty_cache["timestamp"] = 0
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True, "message": "Ticket already has UK Warranty tag"}).encode())
+                return
+
+            new_tags = [{"name": t.get("name", "")} for t in current_tags if isinstance(t, dict)]
+            new_tags.append({"name": "UK Warranty"})
+
+            tag_url = f"{BASE_URL}/tickets/{ticket_id}"
+            tag_body = json.dumps({"tags": new_tags}).encode()
+            credentials = base64.b64encode(f"{GORGIAS_EMAIL}:{GORGIAS_API_KEY}".encode()).decode()
+            req = urllib.request.Request(tag_url, data=tag_body, method="PUT")
+            req.add_header("Authorization", f"Basic {credentials}")
+            req.add_header("Content-Type", "application/json")
+            req.add_header("User-Agent", "ClicksDashboard/1.0")
+
+            ctx = ssl.create_default_context()
+            try:
+                with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+                    resp_data = json.loads(resp.read().decode())
+                _warranty_cache["timestamp"] = 0
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                _add_activity(self._get_username(), "Added warranty ticket", f"Ticket {ticket_id} tagged with UK Warranty")
+                self.wfile.write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} tagged with UK Warranty"}).encode())
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode() if e.fp else ""
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": f"Failed to tag: HTTP {e.code} {err_body[:200]}"}).encode())
+            except Exception as e:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+
+        elif self.path == '/api/remove-warranty-ticket':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+            except Exception:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                return
+
+            ticket_id = str(data.get("ticket_id", "")).strip().lstrip("#")
+            if not ticket_id or not ticket_id.isdigit():
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Valid ticket ID required"}).encode())
+                return
+
+            ticket = gorgias_request(f"tickets/{ticket_id}")
+            if ticket.get("error"):
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket['error']}"}).encode())
+                return
+
+            current_tags = ticket.get("tags") or []
+            new_tags = [{"name": t.get("name", "")} for t in current_tags if isinstance(t, dict) and t.get("name", "").lower() != "uk warranty"]
+
+            tag_url = f"{BASE_URL}/tickets/{ticket_id}"
+            tag_body = json.dumps({"tags": new_tags}).encode()
+            credentials = base64.b64encode(f"{GORGIAS_EMAIL}:{GORGIAS_API_KEY}".encode()).decode()
+            req = urllib.request.Request(tag_url, data=tag_body, method="PUT")
+            req.add_header("Authorization", f"Basic {credentials}")
+            req.add_header("Content-Type", "application/json")
+            req.add_header("User-Agent", "ClicksDashboard/1.0")
+
+            ctx = ssl.create_default_context()
+            try:
+                with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+                    resp_data = json.loads(resp.read().decode())
+                _warranty_cache["timestamp"] = 0
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                _add_activity(self._get_username(), "Removed warranty ticket", f"Ticket {ticket_id} removed from UK Warranties")
+                self.wfile.write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} removed from UK Warranties"}).encode())
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode() if e.fp else ""
                 self.send_response(200)
@@ -3825,19 +4686,23 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     return
                 stock.append(item)
                 _save_stock(stock)
+                _add_activity(self._get_username(), "Added stock item", f"{item.get('sku','')} - {item.get('description','')}")
 
             elif action == "update":
                 idx = data.get("index", -1)
                 item = data.get("item", {})
                 if 0 <= idx < len(stock):
+                    old_sku = stock[idx].get("sku", "")
                     stock[idx] = item
                     _save_stock(stock)
+                    _add_activity(self._get_username(), "Updated stock item", f"{item.get('sku', old_sku)} - {item.get('description','')}")
 
             elif action == "delete":
                 idx = data.get("index", -1)
                 if 0 <= idx < len(stock):
-                    stock.pop(idx)
+                    deleted = stock.pop(idx)
                     _save_stock(stock)
+                    _add_activity(self._get_username(), "Deleted stock item", f"{deleted.get('sku','')} - {deleted.get('description','')}")
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
