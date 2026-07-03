@@ -585,6 +585,16 @@ def extract_ticket_details(ticket):
     ticket_id = ticket.get("id", "")
     subject = ticket.get("subject", "No subject")
     status = ticket.get("status", "unknown")
+    # Gorgias marks snoozed tickets as "closed" with a future snooze_datetime
+    snooze_dt = ticket.get("snooze_datetime") or ""
+    if status == "closed" and snooze_dt:
+        try:
+            from datetime import datetime, timezone
+            snooze_time = datetime.fromisoformat(snooze_dt.replace("Z", "+00:00"))
+            if snooze_time > datetime.now(timezone.utc):
+                status = "snoozed"
+        except Exception:
+            pass
     created = ticket.get("created_datetime", "")
     updated = ticket.get("updated_datetime", "")
     channel = ticket.get("channel", "unknown")
