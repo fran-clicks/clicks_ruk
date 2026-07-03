@@ -562,12 +562,56 @@ def extract_ticket_details(ticket):
 
     # Customer info
     customer = ticket.get("customer") or {}
+    customer_id = None
+    customer_data = {}
     if isinstance(customer, dict):
         customer_name = customer.get("name", "Unknown")
         customer_email = customer.get("email", "N/A")
+        customer_id = customer.get("id")
+        # Extract extra customer data if available
+        customer_data = {
+            "note": customer.get("note", ""),
+            "language": customer.get("language", ""),
+            "timezone": customer.get("timezone", ""),
+            "created": customer.get("created_datetime", ""),
+            "nb_tickets": customer.get("nb_tickets", ""),
+            "external_id": customer.get("external_id", ""),
+        }
     else:
         customer_name = "Unknown"
         customer_email = "N/A"
+
+    # Try to get Shopify order data from integrations
+    shopify_data = {}
+    integrations = ticket.get("integrations") or ticket.get("meta") or {}
+    if isinstance(integrations, dict):
+        shopify = integrations.get("shopify") or integrations.get("Shopify") or {}
+        if isinstance(shopify, dict):
+            for order in (shopify.get("orders") or []):
+                if isinstance(order, dict):
+                    order_name = order.get("name", order.get("order_number", ""))
+                    if order_name:
+                        shopify_data = {
+                            "order_name": order_name,
+                            "order_date": order.get("created_at", ""),
+                            "total_price": order.get("total_price", ""),
+                            "currency": order.get("currency", ""),
+                            "financial_status": order.get("financial_status", ""),
+                            "fulfillment_status": order.get("fulfillment_status", ""),
+                            "shipping_address": "",
+                        }
+                        # Shipping address
+                        addr = order.get("shipping_address") or {}
+                        if isinstance(addr, dict):
+                            parts = [addr.get("city", ""), addr.get("province", ""), addr.get("country", "")]
+                            shopify_data["shipping_address"] = ", ".join(p for p in parts if p)
+                        # Line items (products)
+                        for item in (order.get("line_items") or []):
+                            if isinstance(item, dict):
+                                item_name = item.get("title", "") or item.get("name", "")
+                                if item_name:
+                                    order_numbers.add(order_name)
+                        break  # use most recent order
 
     # Tags
     raw_tags = ticket.get("tags") or []
@@ -597,14 +641,18 @@ def extract_ticket_details(ticket):
                 if isinstance(v, str):
                     order_numbers.update(re.findall(ORDER_PATTERN, v, re.IGNORECASE))
 
-    # Compute return timeline from tags
+    # Compute return timeline from tags — auto-fill all stages before the highest reached
     tags_lower = [t.lower() for t in tags]
+    highest_stage = -1
+    for i, stage in enumerate(RETURN_TIMELINE_STAGES):
+        if stage["tag"] in tags_lower:
+            highest_stage = i
     timeline = []
-    for stage in RETURN_TIMELINE_STAGES:
+    for i, stage in enumerate(RETURN_TIMELINE_STAGES):
         timeline.append({
             "key": stage["key"],
             "label": stage["label"],
-            "done": stage["tag"] in tags_lower,
+            "done": i <= highest_stage,
         })
 
     return {
@@ -617,6 +665,9 @@ def extract_ticket_details(ticket):
         "assignee": assignee_name,
         "customer_name": customer_name,
         "customer_email": customer_email,
+        "customer_id": customer_id,
+        "customer_data": customer_data,
+        "shopify": shopify_data,
         "tags": tags,
         "custom_fields": custom_fields,
         "order_numbers": list(order_numbers),
@@ -915,6 +966,46 @@ ISSUE_PATTERNS = [
 def enrich_with_messages(ticket_summary):
     """Fetch full messages for a ticket to extract more details."""
     tid = ticket_summary["id"]
+
+    # Fetch customer details for Shopify integration data
+    cid = ticket_summary.get("customer_id")
+    if cid and not ticket_summary.get("shopify"):
+        cust_data = gorgias_request(f"customers/{cid}")
+        if "error" not in cust_data and isinstance(cust_data, dict):
+            # Check for Shopify data in customer's meta/integrations
+            for key in ("meta", "integrations", "data"):
+                integ = cust_data.get(key) or {}
+                if isinstance(integ, dict):
+                    shopify = integ.get("shopify") or integ.get("Shopify") or {}
+                    if isinstance(shopify, dict) and shopify.get("orders"):
+                        for order in shopify["orders"]:
+                            if isinstance(order, dict):
+                                order_name = order.get("name", order.get("order_number", ""))
+                                # Match against known order numbers
+                                known_orders = set(ticket_summary.get("order_numbers", []))
+                                if order_name and (not known_orders or order_name in known_orders):
+                                    ticket_summary["shopify"] = {
+                                        "order_name": order_name,
+                                        "order_date": order.get("created_at", ""),
+                                        "total_price": order.get("total_price", ""),
+                                        "currency": order.get("currency", order.get("presentment_currency", "")),
+                                        "financial_status": order.get("financial_status", ""),
+                                        "fulfillment_status": order.get("fulfillment_status", ""),
+                                        "shipping_address": "",
+                                    }
+                                    addr = order.get("shipping_address") or {}
+                                    if isinstance(addr, dict):
+                                        parts = [addr.get("city", ""), addr.get("province", ""), addr.get("country", "")]
+                                        ticket_summary["shopify"]["shipping_address"] = ", ".join(p for p in parts if p)
+                                    break
+                        break
+            # Update customer data
+            ticket_summary["customer_data"].update({
+                "note": cust_data.get("note", "") or ticket_summary["customer_data"].get("note", ""),
+                "nb_tickets": cust_data.get("nb_tickets", ""),
+            })
+        time.sleep(0.3)
+
     data = gorgias_request(f"tickets/{tid}/messages", {"limit": 100})
     if "error" not in data:
         messages = data.get("data", [])
@@ -1973,11 +2064,18 @@ function openDetail(id) {
       <h3>Customer</h3>
       <div class="detail-row"><span class="label">Name</span><span class="value">${esc(t.customer_name)}</span></div>
       <div class="detail-row"><span class="label">Email</span><span class="value">${esc(t.customer_email)}</span></div>
+      ${(t.customer_data||{}).nb_tickets ? `<div class="detail-row"><span class="label">Total Tickets</span><span class="value">${t.customer_data.nb_tickets}</span></div>` : ''}
+      ${t.shopify?.shipping_address ? `<div class="detail-row"><span class="label">Location</span><span class="value">${esc(t.shopify.shipping_address)}</span></div>` : ''}
+      ${(t.customer_data||{}).note ? `<div class="detail-row"><span class="label">Note</span><span class="value">${esc(t.customer_data.note)}</span></div>` : ''}
     </div>
 
     <div class="detail-section">
-      <h3>Order Number</h3>
+      <h3>Order Info</h3>
       <div class="tag-list">${ordersHtml}</div>
+      ${t.shopify?.order_date ? `<div class="detail-row" style="margin-top:8px"><span class="label">Purchase Date</span><span class="value">${formatDate(t.shopify.order_date)}</span></div>` : ''}
+      ${t.shopify?.total_price ? `<div class="detail-row"><span class="label">Order Total</span><span class="value">${esc(t.shopify.currency || '')} ${esc(t.shopify.total_price)}</span></div>` : ''}
+      ${t.shopify?.financial_status ? `<div class="detail-row"><span class="label">Payment</span><span class="value" style="text-transform:capitalize">${esc(t.shopify.financial_status)}</span></div>` : ''}
+      ${t.shopify?.fulfillment_status ? `<div class="detail-row"><span class="label">Fulfillment</span><span class="value" style="text-transform:capitalize">${esc(t.shopify.fulfillment_status)}</span></div>` : ''}
     </div>
 
     <div class="detail-section">
