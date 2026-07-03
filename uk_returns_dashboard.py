@@ -2551,7 +2551,7 @@ function filterTickets() {
           return pip + line;
         }).join('')}
       </div>
-      <div class="ticket-date">${t.shopify?.order_date ? formatDate(t.shopify.order_date) : '-'}</div>
+      <div class="ticket-date" style="color:${purchaseDateColor(t.shopify?.order_date)}">${t.shopify?.order_date ? formatDate(t.shopify.order_date) : '-'}</div>
       <div class="ticket-customer">${esc(t.customer_name)}</div>
       <div class="ticket-date">${formatDate(t.updated)}</div>
       <div><span class="status-badge status-${t.status}">${t.status}</span></div>
@@ -2634,7 +2634,7 @@ function openDetail(id) {
     <div class="detail-section">
       <h3>Order Info</h3>
       <div class="tag-list">${ordersHtml}</div>
-      ${t.shopify?.order_date ? `<div class="detail-row" style="margin-top:8px"><span class="label">Purchase Date</span><span class="value">${formatDate(t.shopify.order_date)}</span></div>` : ''}
+      ${t.shopify?.order_date ? `<div class="detail-row" style="margin-top:8px"><span class="label">Purchase Date</span><span class="value" style="color:${purchaseDateColor(t.shopify.order_date)}">${formatDate(t.shopify.order_date)}</span></div>` : ''}
       ${t.shopify?.total_price ? `<div class="detail-row"><span class="label">Order Total</span><span class="value">${esc(t.shopify.currency || '')} ${esc(t.shopify.total_price)}</span></div>` : ''}
       ${t.shopify?.financial_status ? `<div class="detail-row"><span class="label">Payment</span><span class="value" style="text-transform:capitalize">${esc(t.shopify.financial_status)}</span></div>` : ''}
       ${t.shopify?.fulfillment_status ? `<div class="detail-row"><span class="label">Fulfillment</span><span class="value" style="text-transform:capitalize">${esc(t.shopify.fulfillment_status)}</span></div>` : ''}
@@ -3060,6 +3060,14 @@ async function submitTracking(ticketId) {
 
   btn.disabled = false;
   btn.textContent = 'Add & Post Note';
+}
+
+function purchaseDateColor(iso) {
+  if (!iso) return 'inherit';
+  const d = new Date(iso);
+  const oneYearAgo = new Date();
+  oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+  return d >= oneYearAgo ? '#4caf50' : '#f44336';
 }
 
 function formatDate(iso) {
