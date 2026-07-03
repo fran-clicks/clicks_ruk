@@ -2092,7 +2092,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
   <div id="addTicketForm" style="display:none">
     <div class="add-ticket-row">
-      <input type="text" id="addTicketInput" placeholder="Enter ticket ID (e.g. 12345 or #12345)" onkeydown="if(event.key==='Enter')submitAddTicket()">
+      <input type="text" id="addTicketInput" placeholder="Enter ticket ID or CT order number (e.g. 12345 or CT261032550)" onkeydown="if(event.key==='Enter')submitAddTicket()">
       <button class="btn-sm btn-add" id="addTicketBtn" onclick="submitAddTicket()">Add & Tag</button>
     </div>
     <div id="addTicketMsg"></div>
@@ -2748,28 +2748,54 @@ async function submitAddTicket() {
   const input = document.getElementById('addTicketInput');
   const btn = document.getElementById('addTicketBtn');
   const msgDiv = document.getElementById('addTicketMsg');
-  let ticketId = input.value.trim().replace(/^#/, '');
+  let val = input.value.trim().replace(/^#/, '');
 
-  if (!ticketId || !/^\d+$/.test(ticketId)) {
-    msgDiv.innerHTML = '<span style="color:var(--red);font-size:13px">Enter a valid ticket ID (numbers only)</span>';
+  if (!val) {
+    msgDiv.innerHTML = '<span style="color:var(--red);font-size:13px">Enter a ticket ID or CT order number</span>';
+    input.focus();
+    return;
+  }
+
+  const isCT = /^CT/i.test(val);
+  if (!isCT && !/^\d+$/.test(val)) {
+    msgDiv.innerHTML = '<span style="color:var(--red);font-size:13px">Enter a numeric ticket ID or a CT order number</span>';
     input.focus();
     return;
   }
 
   btn.disabled = true;
-  btn.textContent = 'Adding...';
+  btn.textContent = isCT ? 'Searching...' : 'Adding...';
   msgDiv.innerHTML = '';
 
   try {
+    if (isCT) {
+      // Search by order number first
+      const searchResp = await fetch('/api/search-by-order', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({order_number: val.toUpperCase()}),
+      });
+      if (searchResp.status === 401) { window.location.href = '/login'; return; }
+      const searchData = await searchResp.json();
+      if (!searchData.ok || !searchData.ticket_id) {
+        msgDiv.innerHTML = '<span style="color:var(--red);font-size:13px">' + (searchData.error || 'No ticket found for ' + val) + '</span>';
+        btn.disabled = false;
+        btn.textContent = 'Add & Tag';
+        return;
+      }
+      val = String(searchData.ticket_id);
+      msgDiv.innerHTML = '<span style="color:var(--blue);font-size:13px">Found ticket #' + val + ', adding tag...</span>';
+    }
+
     const resp = await fetch('/api/add-ticket', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ticket_id: ticketId}),
+      body: JSON.stringify({ticket_id: val}),
     });
     if (resp.status === 401) { window.location.href = '/login'; return; }
     const data = await resp.json();
     if (data.ok) {
-      msgDiv.innerHTML = '<span style="color:var(--green);font-size:13px">Ticket #' + ticketId + ' tagged &amp; added! Refreshing...</span>';
+      msgDiv.innerHTML = '<span style="color:var(--green);font-size:13px">Ticket #' + val + ' tagged &amp; added! Refreshing...</span>';
       input.value = '';
       setTimeout(() => {
         document.getElementById('addTicketForm').style.display = 'none';
@@ -3050,6 +3076,86 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 # Invalidate cache so next load picks up the new note
                 _cache["timestamp"] = 0
                 self.wfile.write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
+        elif self.path == '/api/search-by-order':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+            except Exception:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                return
+
+            order_num = str(data.get("order_number", "")).strip().upper()
+            if not order_num:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": "Order number required"}).encode())
+                return
+
+            # Search Gorgias tickets by order number
+            search_result = gorgias_request("tickets", {"limit": 20})
+            found_ticket_id = None
+
+            # Method 1: Search via Gorgias search endpoint
+            search_result2 = gorgias_request("search", {"type": "ticket", "query": order_num, "limit": 10})
+            if isinstance(search_result2, dict) and "error" not in search_result2:
+                hits = search_result2.get("data") or search_result2.get("hits") or []
+                if isinstance(hits, list):
+                    for hit in hits:
+                        if isinstance(hit, dict):
+                            tid = hit.get("id") or (hit.get("_source") or {}).get("id")
+                            if tid:
+                                found_ticket_id = tid
+                                break
+
+            # Method 2: If search didn't work, try filtering tickets
+            if not found_ticket_id:
+                page = 1
+                checked = 0
+                while checked < 200:  # Check up to 200 tickets
+                    params = {"limit": 50, "page": page, "order_by": "created_datetime:desc"}
+                    batch = gorgias_request("tickets", params)
+                    if isinstance(batch, dict) and "error" not in batch:
+                        tickets = batch.get("data") or []
+                        if not tickets:
+                            break
+                        for t in tickets:
+                            if not isinstance(t, dict):
+                                continue
+                            # Check subject
+                            subj = str(t.get("subject", "")).upper()
+                            if order_num in subj:
+                                found_ticket_id = t.get("id")
+                                break
+                            # Check custom fields
+                            cfs = t.get("custom_fields") or {}
+                            if isinstance(cfs, dict):
+                                for fid, fdata in cfs.items():
+                                    if isinstance(fdata, dict) and order_num in str(fdata.get("value", "")).upper():
+                                        found_ticket_id = t.get("id")
+                                        break
+                            if found_ticket_id:
+                                break
+                        checked += len(tickets)
+                        page += 1
+                        if found_ticket_id:
+                            break
+                        time.sleep(0.3)
+                    else:
+                        break
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            if found_ticket_id:
+                self.wfile.write(json.dumps({"ok": True, "ticket_id": found_ticket_id}).encode())
+            else:
+                self.wfile.write(json.dumps({"ok": False, "error": f"No ticket found for order {order_num}"}).encode())
+
         elif self.path == '/api/add-ticket':
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)
