@@ -3096,57 +3096,63 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"ok": False, "error": "Order number required"}).encode())
                 return
 
-            # Search Gorgias tickets by order number
-            search_result = gorgias_request("tickets", {"limit": 20})
             found_ticket_id = None
 
-            # Method 1: Search via Gorgias search endpoint
-            search_result2 = gorgias_request("search", {"type": "ticket", "query": order_num, "limit": 10})
-            if isinstance(search_result2, dict) and "error" not in search_result2:
-                hits = search_result2.get("data") or search_result2.get("hits") or []
-                if isinstance(hits, list):
-                    for hit in hits:
-                        if isinstance(hit, dict):
-                            tid = hit.get("id") or (hit.get("_source") or {}).get("id")
-                            if tid:
-                                found_ticket_id = tid
-                                break
+            # Scan recent tickets: check subject, custom fields, and full JSON
+            page = 1
+            checked = 0
+            while checked < 300 and not found_ticket_id:
+                params = {"limit": 50, "page": page, "order_by": "created_datetime:desc"}
+                batch = gorgias_request("tickets", params)
+                if not isinstance(batch, dict) or "error" in batch:
+                    break
+                tickets = batch.get("data") or []
+                if not tickets:
+                    break
+                for t in tickets:
+                    if not isinstance(t, dict):
+                        continue
+                    # Quick check: serialize ticket and search
+                    if order_num in json.dumps(t).upper():
+                        found_ticket_id = t.get("id")
+                        break
+                checked += len(tickets)
+                page += 1
+                time.sleep(0.3)
 
-            # Method 2: If search didn't work, try filtering tickets
+            # If not found in ticket metadata, search message bodies
             if not found_ticket_id:
+                # Re-scan same tickets but check their messages
                 page = 1
                 checked = 0
-                while checked < 200:  # Check up to 200 tickets
-                    params = {"limit": 50, "page": page, "order_by": "created_datetime:desc"}
+                while checked < 150 and not found_ticket_id:
+                    params = {"limit": 30, "page": page, "order_by": "created_datetime:desc"}
                     batch = gorgias_request("tickets", params)
-                    if isinstance(batch, dict) and "error" not in batch:
-                        tickets = batch.get("data") or []
-                        if not tickets:
-                            break
-                        for t in tickets:
-                            if not isinstance(t, dict):
-                                continue
-                            # Check subject
-                            subj = str(t.get("subject", "")).upper()
-                            if order_num in subj:
-                                found_ticket_id = t.get("id")
-                                break
-                            # Check custom fields
-                            cfs = t.get("custom_fields") or {}
-                            if isinstance(cfs, dict):
-                                for fid, fdata in cfs.items():
-                                    if isinstance(fdata, dict) and order_num in str(fdata.get("value", "")).upper():
-                                        found_ticket_id = t.get("id")
-                                        break
-                            if found_ticket_id:
-                                break
-                        checked += len(tickets)
-                        page += 1
+                    if not isinstance(batch, dict) or "error" in batch:
+                        break
+                    tickets = batch.get("data") or []
+                    if not tickets:
+                        break
+                    for t in tickets:
+                        if not isinstance(t, dict):
+                            continue
+                        tid = t.get("id")
+                        msgs = gorgias_request(f"tickets/{tid}/messages", {"limit": 10})
+                        if isinstance(msgs, dict) and "error" not in msgs:
+                            for msg in (msgs.get("data") or []):
+                                if not isinstance(msg, dict):
+                                    continue
+                                body_text = str(msg.get("body_text", "")).upper()
+                                if order_num in body_text:
+                                    found_ticket_id = tid
+                                    break
                         if found_ticket_id:
                             break
+                        time.sleep(0.2)
+                    checked += len(tickets)
+                    page += 1
+                    if not found_ticket_id:
                         time.sleep(0.3)
-                    else:
-                        break
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -3154,7 +3160,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if found_ticket_id:
                 self.wfile.write(json.dumps({"ok": True, "ticket_id": found_ticket_id}).encode())
             else:
-                self.wfile.write(json.dumps({"ok": False, "error": f"No ticket found for order {order_num}"}).encode())
+                self.wfile.write(json.dumps({"ok": False, "error": f"No ticket found for order {order_num}. Try entering the ticket ID directly."}).encode())
 
         elif self.path == '/api/add-ticket':
             content_length = int(self.headers.get('Content-Length', 0))
