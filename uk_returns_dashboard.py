@@ -3026,6 +3026,49 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"stock": _load_stock()}).encode())
 
+        elif self.path.startswith('/api/debug-ticket/'):
+            # Temporary debug endpoint — shows raw Gorgias data for a ticket
+            ticket_id = self.path.split('/')[-1]
+            ticket_raw = gorgias_request(f"tickets/{ticket_id}")
+
+            debug = {"ticket_keys": [], "custom_fields_raw": None, "integrations_raw": None, "meta_raw": None, "related_objects_raw": None, "customer_id": None}
+            if isinstance(ticket_raw, dict) and "error" not in ticket_raw:
+                debug["ticket_keys"] = list(ticket_raw.keys())
+                debug["custom_fields_raw"] = ticket_raw.get("custom_fields")
+                debug["integrations_raw"] = ticket_raw.get("integrations")
+                debug["meta_raw"] = ticket_raw.get("meta")
+                debug["related_objects_raw"] = ticket_raw.get("related_objects")
+                cust = ticket_raw.get("customer") or {}
+                debug["customer_id"] = cust.get("id") if isinstance(cust, dict) else None
+
+                # Also fetch customer data
+                cid = debug["customer_id"]
+                if cid:
+                    cust_data = gorgias_request(f"customers/{cid}")
+                    if isinstance(cust_data, dict) and "error" not in cust_data:
+                        debug["customer_keys"] = list(cust_data.keys())
+                        debug["customer_meta"] = cust_data.get("meta")
+                        debug["customer_integrations"] = cust_data.get("integrations")
+                        debug["customer_data_field"] = cust_data.get("data")
+                        debug["customer_external_id"] = cust_data.get("external_id")
+
+                    # Try widgets endpoint
+                    widgets = gorgias_request(f"customers/{cid}/widgets")
+                    debug["widgets_raw"] = widgets if not isinstance(widgets, dict) or "error" not in widgets else str(widgets)
+
+                    # Try ticket with related_objects
+                    ticket_related = gorgias_request(f"tickets/{ticket_id}", {"include": "related_objects"})
+                    if isinstance(ticket_related, dict):
+                        debug["ticket_related_keys"] = list(ticket_related.keys())
+                        debug["related_objects_v2"] = ticket_related.get("related_objects")
+            else:
+                debug["error"] = ticket_raw
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(debug, indent=2, default=str).encode())
+
         else:
             self.send_response(404)
             self.end_headers()
