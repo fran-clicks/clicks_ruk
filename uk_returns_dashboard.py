@@ -40,12 +40,27 @@ Usage:
 #   created_at TIMESTAMPTZ DEFAULT NOW()
 # );
 #
+# ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS upc TEXT DEFAULT '';
+#
+# CREATE TABLE sign_outs (
+#   id BIGSERIAL PRIMARY KEY,
+#   po_number TEXT NOT NULL,
+#   destination TEXT DEFAULT '',
+#   notes TEXT DEFAULT '',
+#   created_by TEXT DEFAULT '',
+#   include_invoice BOOLEAN DEFAULT false,
+#   items JSONB DEFAULT '[]',
+#   created_at TIMESTAMPTZ DEFAULT NOW()
+# );
+#
 # ALTER TABLE stock_items ENABLE ROW LEVEL SECURITY;
 # ALTER TABLE activity_log ENABLE ROW LEVEL SECURITY;
 # ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+# ALTER TABLE sign_outs ENABLE ROW LEVEL SECURITY;
 # CREATE POLICY "Allow all for anon" ON stock_items FOR ALL USING (true) WITH CHECK (true);
 # CREATE POLICY "Allow all for anon" ON activity_log FOR ALL USING (true) WITH CHECK (true);
 # CREATE POLICY "Allow all for anon" ON sessions FOR ALL USING (true) WITH CHECK (true);
+# CREATE POLICY "Allow all for anon" ON sign_outs FOR ALL USING (true) WITH CHECK (true);
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -200,6 +215,123 @@ def _add_activity(user, action, details=""):
         log = _load_activity_log_file()
         log.append({"timestamp": entry["timestamp"], "user": user, "action": action, "details": details})
         _save_activity_log_file(log)
+
+
+def _generate_doc_html(po, items, doc_type):
+    """Generate print-ready HTML for packing slip, packing list, or commercial invoice."""
+    import html as html_mod
+    po_number = html_mod.escape(po.get("po_number", ""))
+    destination = html_mod.escape(po.get("destination", ""))
+    notes = html_mod.escape(po.get("notes", ""))
+    created_by = html_mod.escape(po.get("created_by", ""))
+    created_at = po.get("created_at", "")
+    if created_at:
+        try:
+            dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            date_str = dt.strftime("%d/%m/%Y")
+        except Exception:
+            date_str = created_at[:10]
+    else:
+        date_str = datetime.now().strftime("%d/%m/%Y")
+
+    cond_labels = {"brand_new": "Brand New", "non_pristine": "Non-Pristine", "damaged": "Damaged", "founders": "Founders"}
+    total_qty = sum(i.get("qty", 0) for i in items)
+
+    title_map = {"packing-slip": "Packing Slip", "packing-list": "Packing List", "invoice": "Commercial Invoice"}
+    title = title_map.get(doc_type, "Document")
+
+    rows_html = ""
+    for idx, item in enumerate(items, 1):
+        sku = html_mod.escape(item.get("sku", ""))
+        desc = html_mod.escape(item.get("description", ""))
+        upc = html_mod.escape(item.get("upc", ""))
+        cond = cond_labels.get(item.get("condition", ""), item.get("condition", ""))
+        qty = item.get("qty", 0)
+        rows_html += f"<tr><td>{idx}</td><td>{sku}</td><td>{desc}</td>"
+        if doc_type == "packing-list":
+            rows_html += f"<td>{upc}</td>"
+        rows_html += f"<td>{cond}</td><td style='text-align:center'>{qty}</td>"
+        if doc_type == "invoice":
+            rows_html += "<td style='text-align:right'>-</td><td style='text-align:right'>-</td>"
+        rows_html += "</tr>"
+
+    # Totals row
+    rows_html += f"<tr style='font-weight:700;border-top:2px solid #333'><td colspan='{'5' if doc_type == 'packing-list' else '4'}' style='text-align:right'>Total:</td><td style='text-align:center'>{total_qty}</td>"
+    if doc_type == "invoice":
+        rows_html += "<td></td><td style='text-align:right'>-</td>"
+    rows_html += "</tr>"
+
+    extra_cols = ""
+    extra_headers = ""
+    if doc_type == "packing-list":
+        extra_headers = "<th>UPC</th>"
+    if doc_type == "invoice":
+        extra_headers = "<th style='text-align:right'>Unit Value</th><th style='text-align:right'>Total Value</th>"
+
+    invoice_section = ""
+    if doc_type == "invoice":
+        invoice_section = """
+        <div style="margin-top:30px;display:flex;justify-content:space-between">
+          <div><strong>Shipper / Exporter:</strong><br>Clicks Technology Ltd<br>United Kingdom</div>
+          <div><strong>Consignee:</strong><br>""" + destination + """</div>
+        </div>
+        <div style="margin-top:16px"><strong>Country of Origin:</strong> China<br>
+        <strong>Terms of Sale:</strong> DAP<br>
+        <strong>Reason for Export:</strong> Sale of goods</div>
+        """
+
+    signature_section = ""
+    if doc_type == "invoice":
+        signature_section = """
+        <div style="margin-top:40px;display:flex;justify-content:space-between">
+          <div style="width:45%"><div style="border-bottom:1px solid #333;height:40px"></div><p style="font-size:11px;margin-top:4px">Authorized Signature</p></div>
+          <div style="width:45%"><div style="border-bottom:1px solid #333;height:40px"></div><p style="font-size:11px;margin-top:4px">Date</p></div>
+        </div>"""
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{title} - {po_number}</title>
+<style>
+  @media print {{ @page {{ margin: 20mm; }} body {{ margin: 0; }} .no-print {{ display: none; }} }}
+  body {{ font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #222; max-width: 800px; margin: 20px auto; padding: 20px; }}
+  h1 {{ font-size: 22px; margin-bottom: 4px; }}
+  .doc-header {{ display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 2px solid #333; }}
+  .doc-header .logo {{ font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }}
+  .doc-header .meta {{ text-align: right; font-size: 12px; color: #555; }}
+  table {{ width: 100%; border-collapse: collapse; margin-top: 16px; }}
+  th {{ background: #f5f5f5; text-align: left; padding: 8px 10px; font-size: 11px; text-transform: uppercase; border-bottom: 2px solid #333; }}
+  td {{ padding: 8px 10px; border-bottom: 1px solid #ddd; }}
+  .info-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; margin-bottom: 16px; font-size: 13px; }}
+  .info-grid .label {{ color: #777; font-size: 11px; text-transform: uppercase; }}
+  .btn-bar {{ margin: 20px 0; display: flex; gap: 8px; }}
+  .btn-bar button {{ padding: 8px 20px; border: 1px solid #333; background: #fff; cursor: pointer; border-radius: 4px; font-size: 13px; }}
+  .btn-bar button:hover {{ background: #f0f0f0; }}
+  .btn-bar button.primary {{ background: #333; color: #fff; }}
+  .btn-bar button.primary:hover {{ background: #555; }}
+</style></head><body>
+<div class="no-print btn-bar">
+  <button class="primary" onclick="window.print()">&#128424; Print</button>
+  <button onclick="window.close()">Close</button>
+</div>
+<div class="doc-header">
+  <div><div class="logo">CLICKS</div><h1>{title}</h1></div>
+  <div class="meta">
+    <div><strong>{po_number}</strong></div>
+    <div>{date_str}</div>
+  </div>
+</div>
+{invoice_section}
+<div class="info-grid">
+  <div><div class="label">Destination</div>{destination or '-'}</div>
+  <div><div class="label">Prepared By</div>{created_by or '-'}</div>
+  <div><div class="label">Notes</div>{notes or '-'}</div>
+  <div><div class="label">Total Items</div>{total_qty} unit(s), {len(items)} SKU(s)</div>
+</div>
+<table>
+  <thead><tr><th>#</th><th>SKU</th><th>Description</th>{extra_headers}<th>Condition</th><th style="text-align:center">Qty</th></tr></thead>
+  <tbody>{rows_html}</tbody>
+</table>
+{signature_section}
+</body></html>"""
 
 
 def _create_session(username=""):
@@ -2172,9 +2304,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     text-transform: uppercase;
     letter-spacing: 0.3px;
   }
-  .status-open { background: rgba(116,185,255,0.15); color: var(--blue); }
-  .status-closed { background: rgba(34,197,94,0.15); color: var(--green); }
-  .status-snoozed { background: rgba(245,158,11,0.15); color: var(--yellow); }
+  .status-open { background: rgba(34,197,94,0.15); color: var(--green); }
+  .status-closed { background: rgba(225,112,85,0.15); color: var(--red); }
+  .status-snoozed { background: rgba(116,185,255,0.15); color: var(--blue); }
   .process-badge {
     display: inline-block;
     padding: 4px 12px;
@@ -2184,8 +2316,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     text-transform: uppercase;
     letter-spacing: 0.3px;
   }
-  .process-open { background: rgba(255,107,0,0.15); color: var(--accent); }
-  .process-closed { background: rgba(34,197,94,0.15); color: var(--green); }
+  .process-open { background: rgba(34,197,94,0.15); color: var(--green); }
+  .process-closed { background: rgba(225,112,85,0.15); color: var(--red); }
   .process-unknown { background: rgba(136,136,136,0.15); color: var(--text-dim); }
   .order-num { font-family: monospace; font-weight: 600; color: var(--accent-light); }
   .add-tracking-row {
@@ -2579,7 +2711,63 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .col-headers div:nth-child(n+4):nth-child(-n+9) { display: none; }
     .detail-panel { width: 100%; }
   }
+
+  /* Barcode Scanner */
+  .scanner-overlay {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.85); z-index: 300; align-items: center; justify-content: center; flex-direction: column;
+  }
+  .scanner-overlay.open { display: flex; }
+  .scanner-box {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    padding: 24px; width: 500px; max-width: 95vw; max-height: 90vh; overflow-y: auto;
+  }
+  .scanner-box h3 { margin-bottom: 12px; font-size: 16px; }
+  #scannerVideo { width: 100%; border-radius: 8px; background: #000; }
+  .scan-result {
+    margin-top: 12px; padding: 12px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; display: none;
+  }
+  .scan-result.show { display: block; }
+  .scan-result .found { color: #4caf50; font-weight: 600; }
+  .scan-result .not-found { color: var(--accent-light); font-weight: 600; }
+  .scan-manual { display: flex; gap: 8px; margin-top: 12px; }
+  .scan-manual input { flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; color: var(--text); font-size: 14px; outline: none; }
+  .scan-manual input:focus { border-color: var(--accent); }
+
+  /* PO / Cart */
+  .cart-panel {
+    display: none; background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    margin: 0 32px 16px; padding: 20px;
+  }
+  .cart-panel.open { display: block; }
+  .cart-panel h3 { font-size: 15px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .cart-header { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .cart-header input, .cart-header select { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; color: var(--text); font-size: 13px; outline: none; }
+  .cart-header input:focus { border-color: var(--accent); }
+  .cart-header label { font-size: 12px; color: var(--text-dim); display: block; margin-bottom: 4px; }
+  .cart-items-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+  .cart-items-table th { text-align: left; font-size: 11px; color: var(--text-dim); text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .cart-items-table td { padding: 8px; font-size: 13px; border-bottom: 1px solid var(--border); }
+  .cart-items-table input[type="number"] { width: 70px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; color: var(--text); font-size: 13px; text-align: center; }
+  .cart-add-row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .cart-add-row select { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; color: var(--text); font-size: 13px; }
+  .cart-footer { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; align-items: center; }
+  .cart-footer label { font-size: 13px; color: var(--text-dim); display: flex; align-items: center; gap: 6px; margin-right: auto; }
+  .cart-footer input[type="checkbox"] { accent-color: var(--accent); }
+  .cart-remove { background: none; border: none; color: var(--red); cursor: pointer; font-size: 16px; padding: 2px 6px; }
+  .cart-remove:hover { opacity: 0.7; }
+
+  /* PO History */
+  .po-history-table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-top: 16px; }
+  .po-history-table th { background: rgba(255,107,0,0.12); color: var(--accent-light); font-size: 12px; font-weight: 600; text-transform: uppercase; padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+  .po-history-table td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid var(--border); }
+  .po-history-table tr:last-child td { border-bottom: none; }
+  .po-history-table tr:hover td { background: var(--card-hover); }
+  .po-doc-btn { background: transparent; border: 1px solid var(--border); color: var(--text-dim); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-right: 4px; }
+  .po-doc-btn:hover { border-color: var(--accent); color: var(--accent-light); }
 </style>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body>
 
@@ -2666,14 +2854,46 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="stock-search">
     <div class="stock-toolbar">
-      <input type="text" id="stockSearch" placeholder="Search by SKU or description..." oninput="filterStock()">
+      <input type="text" id="stockSearch" placeholder="Search by SKU, UPC or description..." oninput="filterStock()">
+      <button class="btn" onclick="openScanner()" style="white-space:nowrap">&#128247; Scan</button>
+      <button class="btn btn-outline" onclick="toggleCart()" id="cartToggleBtn" style="white-space:nowrap">&#128722; Cart (0)</button>
       <button class="btn" onclick="openStockModal()">+ Add Product</button>
+    </div>
+  </div>
+  <!-- Cart / PO Panel -->
+  <div class="cart-panel" id="cartPanel">
+    <h3>&#128722; Sign-Out Cart <span style="font-weight:400;font-size:12px;color:var(--text-dim)" id="cartPoLabel"></span></h3>
+    <div class="cart-header">
+      <div><label>PO Number</label><input type="text" id="cartPoNumber" placeholder="Auto-generated" style="width:160px"></div>
+      <div><label>Destination</label><input type="text" id="cartDestination" placeholder="e.g. Amazon FBA, Customer order..." style="width:240px"></div>
+      <div><label>Notes</label><input type="text" id="cartNotes" placeholder="Optional notes..." style="width:200px"></div>
+    </div>
+    <div class="cart-add-row">
+      <select id="cartProductSelect"><option value="">Select product to add...</option></select>
+      <input type="number" id="cartAddQty" value="1" min="1" style="width:70px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text);font-size:13px;text-align:center">
+      <select id="cartConditionSelect" style="width:120px">
+        <option value="brand_new">Brand New</option>
+        <option value="non_pristine">Non-Pristine</option>
+        <option value="damaged">Damaged</option>
+        <option value="founders">Founders</option>
+      </select>
+      <button class="btn" onclick="addToCart()" style="padding:8px 16px">Add</button>
+    </div>
+    <table class="cart-items-table" id="cartItemsTable">
+      <thead><tr><th>SKU</th><th>Description</th><th>Condition</th><th>Qty</th><th>Available</th><th></th></tr></thead>
+      <tbody id="cartItemsBody"></tbody>
+    </table>
+    <div class="cart-footer">
+      <label><input type="checkbox" id="cartIncludeInvoice"> Include Commercial Invoice</label>
+      <button class="btn btn-outline" onclick="clearCart()">Clear</button>
+      <button class="btn" onclick="confirmSignOut()">Confirm Sign-Out</button>
     </div>
   </div>
   <div class="stock-table-wrap">
     <table class="stock-table">
       <thead>
         <tr>
+          <th>UPC</th>
           <th>SKU</th>
           <th>Description</th>
           <th class="num">Brand New</th>
@@ -2687,6 +2907,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <tbody id="stockBody"></tbody>
     </table>
   </div>
+<div style="padding:0 32px">
+  <h3 style="margin:20px 0 8px;font-size:14px;color:var(--text)">Sign-Out History</h3>
+  <div id="poHistoryWrap"></div>
+</div>
 <div class="activity-log-section">
   <h3 style="margin:16px 0 8px;font-size:14px;color:var(--text)">Activity Log</h3>
   <div id="activityLogStock" class="activity-log"></div>
@@ -2796,6 +3020,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="stock-modal">
     <h3 id="stockModalTitle">Add Product</h3>
     <input type="hidden" id="stockEditId" value="-1">
+    <label>UPC / Barcode</label>
+    <input type="text" id="stockUpc" placeholder="e.g. 860009467835">
     <label>SKU</label>
     <input type="text" id="stockSku" placeholder="e.g. CK-5100-1">
     <label>Description</label>
@@ -2811,6 +3037,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div class="stock-modal-actions">
       <button class="btn btn-outline" onclick="closeStockModal()">Cancel</button>
       <button class="btn" onclick="saveStock()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Barcode Scanner Modal -->
+<div class="scanner-overlay" id="scannerOverlay" onclick="if(event.target===this)closeScanner()">
+  <div class="scanner-box">
+    <h3>&#128247; Barcode Scanner</h3>
+    <div id="scannerVideo" style="min-height:280px"></div>
+    <div class="scan-manual">
+      <input type="text" id="scanManualInput" placeholder="Or type UPC manually..." onkeydown="if(event.key==='Enter')manualBarcodeLookup()">
+      <button class="btn" onclick="manualBarcodeLookup()">Look Up</button>
+    </div>
+    <div class="scan-result" id="scanResult"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button class="btn btn-outline" onclick="closeScanner()">Close</button>
     </div>
   </div>
 </div>
@@ -2868,7 +3110,7 @@ function renderStock() {
   const body = document.getElementById('stockBody');
   const search = (document.getElementById('stockSearch').value || '').toLowerCase();
   const filtered = stockData.filter(s =>
-    s.sku.toLowerCase().includes(search) || s.description.toLowerCase().includes(search)
+    s.sku.toLowerCase().includes(search) || s.description.toLowerCase().includes(search) || (s.upc||'').toLowerCase().includes(search)
   );
 
   let totalNew = 0, totalUsed = 0, totalDmg = 0, totalFounders = 0;
@@ -2889,6 +3131,7 @@ function renderStock() {
     const itemId = s.id !== undefined ? s.id : stockData.indexOf(s);
     const total = (s.brand_new||0) + (s.non_pristine||0) + (s.damaged||0) + (s.founders||0);
     return `<tr>
+      <td style="font-size:12px;color:var(--text-dim)">${esc(s.upc||'')}</td>
       <td class="sku">${esc(s.sku)}</td>
       <td>${esc(s.description)}</td>
       <td class="num" style="color:${stockColor(s.brand_new||0)}">${s.brand_new||0}</td>
@@ -2913,6 +3156,7 @@ function openStockModal(id) {
   const s = id !== undefined ? stockData.find(x => (x.id !== undefined ? x.id : stockData.indexOf(x)) == id) : null;
   if (s) {
     title.textContent = 'Edit Product';
+    document.getElementById('stockUpc').value = s.upc || '';
     document.getElementById('stockSku').value = s.sku;
     document.getElementById('stockDesc').value = s.description;
     document.getElementById('stockQtyNew').value = s.brand_new || 0;
@@ -2921,6 +3165,7 @@ function openStockModal(id) {
     document.getElementById('stockQtyFounders').value = s.founders || 0;
   } else {
     title.textContent = 'Add Product';
+    document.getElementById('stockUpc').value = '';
     document.getElementById('stockSku').value = '';
     document.getElementById('stockDesc').value = '';
     document.getElementById('stockQtyNew').value = 0;
@@ -2940,6 +3185,7 @@ function editStock(id) { openStockModal(id); }
 async function saveStock() {
   const editId = parseInt(document.getElementById('stockEditId').value);
   const item = {
+    upc: document.getElementById('stockUpc').value.trim(),
     sku: document.getElementById('stockSku').value.trim(),
     description: document.getElementById('stockDesc').value.trim(),
     brand_new: parseInt(document.getElementById('stockQtyNew').value) || 0,
@@ -2982,6 +3228,234 @@ async function deleteStock(id) {
       renderStock();
     }
   } catch (e) { alert('Failed: ' + e.message); }
+}
+
+// ============ BARCODE SCANNER ============
+let html5QrCode = null;
+
+function openScanner() {
+  document.getElementById('scannerOverlay').classList.add('open');
+  document.getElementById('scanResult').classList.remove('show');
+  document.getElementById('scanManualInput').value = '';
+  startCamera();
+}
+
+function closeScanner() {
+  stopCamera();
+  document.getElementById('scannerOverlay').classList.remove('open');
+}
+
+async function startCamera() {
+  try {
+    if (html5QrCode) { try { await html5QrCode.stop(); } catch(e) {} }
+    html5QrCode = new Html5Qrcode("scannerVideo");
+    await html5QrCode.start(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: { width: 300, height: 150 }, formatsToSupport: [
+        Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8,
+        Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E,
+        Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39
+      ]},
+      onBarcodeScanned,
+      () => {}
+    );
+  } catch (err) {
+    console.error('Camera error:', err);
+    document.getElementById('scannerVideo').innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-dim)">Camera not available.<br>Use manual entry below.</div>';
+  }
+}
+
+async function stopCamera() {
+  if (html5QrCode) {
+    try { await html5QrCode.stop(); } catch(e) {}
+    html5QrCode = null;
+  }
+}
+
+let lastScannedCode = '';
+let lastScanTime = 0;
+function onBarcodeScanned(code) {
+  const now = Date.now();
+  if (code === lastScannedCode && now - lastScanTime < 3000) return;
+  lastScannedCode = code;
+  lastScanTime = now;
+  lookupBarcode(code);
+}
+
+function manualBarcodeLookup() {
+  const code = document.getElementById('scanManualInput').value.trim();
+  if (code) lookupBarcode(code);
+}
+
+function lookupBarcode(code) {
+  const result = document.getElementById('scanResult');
+  const match = stockData.find(s => (s.upc||'') === code);
+  if (match) {
+    const total = (match.brand_new||0)+(match.non_pristine||0)+(match.damaged||0)+(match.founders||0);
+    result.innerHTML = '<div class="found">&#10003; Found: ' + esc(match.sku) + ' - ' + esc(match.description) + '</div>' +
+      '<div style="margin-top:6px;font-size:13px;color:var(--text-dim)">Stock: ' + total + ' units (New: '+(match.brand_new||0)+', NP: '+(match.non_pristine||0)+', Dmg: '+(match.damaged||0)+', Founders: '+(match.founders||0)+')</div>' +
+      '<div style="margin-top:8px;display:flex;gap:6px">' +
+      '<button class="btn" onclick="addToCartByUpc(\''+esc(code)+'\')">Add to Cart</button>' +
+      '<button class="btn btn-outline" onclick="editStock('+(match.id||0)+');closeScanner()">Edit</button></div>';
+  } else {
+    result.innerHTML = '<div class="not-found">&#x2717; No product found for UPC: ' + esc(code) + '</div>' +
+      '<div style="margin-top:8px"><button class="btn" onclick="openStockModal();document.getElementById(\'stockUpc\').value=\''+esc(code)+'\';closeScanner()">Add as New Product</button></div>';
+  }
+  result.classList.add('show');
+}
+
+// ============ PO / CART SYSTEM ============
+let cartItems = [];
+let poHistory = [];
+
+function toggleCart() {
+  const panel = document.getElementById('cartPanel');
+  panel.classList.toggle('open');
+  if (panel.classList.contains('open')) {
+    populateCartProductSelect();
+    if (!document.getElementById('cartPoNumber').value) {
+      document.getElementById('cartPoNumber').value = 'PO-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + Math.random().toString(36).substr(2,4).toUpperCase();
+    }
+  }
+}
+
+function populateCartProductSelect() {
+  const sel = document.getElementById('cartProductSelect');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Select product to add...</option>';
+  stockData.forEach(s => {
+    const id = s.id !== undefined ? s.id : stockData.indexOf(s);
+    const total = (s.brand_new||0)+(s.non_pristine||0)+(s.damaged||0)+(s.founders||0);
+    sel.innerHTML += '<option value="'+id+'">'+esc(s.sku)+' - '+esc(s.description)+' ('+total+' in stock)</option>';
+  });
+  sel.value = current;
+}
+
+function addToCart() {
+  const sel = document.getElementById('cartProductSelect');
+  const id = parseInt(sel.value);
+  if (isNaN(id)) return;
+  const qty = parseInt(document.getElementById('cartAddQty').value) || 1;
+  const condition = document.getElementById('cartConditionSelect').value;
+  const item = stockData.find(s => (s.id !== undefined ? s.id : stockData.indexOf(s)) == id);
+  if (!item) return;
+  const available = item[condition] || 0;
+  cartItems.push({ stockId: id, sku: item.sku, description: item.description, upc: item.upc||'', condition, qty, available });
+  renderCart();
+  sel.value = '';
+  document.getElementById('cartAddQty').value = 1;
+}
+
+function addToCartByUpc(upc) {
+  const item = stockData.find(s => (s.upc||'') === upc);
+  if (!item) return;
+  const id = item.id !== undefined ? item.id : stockData.indexOf(item);
+  cartItems.push({ stockId: id, sku: item.sku, description: item.description, upc: item.upc||'', condition: 'brand_new', qty: 1, available: item.brand_new||0 });
+  renderCart();
+  const panel = document.getElementById('cartPanel');
+  if (!panel.classList.contains('open')) toggleCart();
+}
+
+function renderCart() {
+  const body = document.getElementById('cartItemsBody');
+  const condLabels = {brand_new:'Brand New',non_pristine:'Non-Pristine',damaged:'Damaged',founders:'Founders'};
+  body.innerHTML = cartItems.map((c, i) => {
+    const item = stockData.find(s => (s.id !== undefined ? s.id : stockData.indexOf(s)) == c.stockId);
+    const avail = item ? (item[c.condition]||0) : 0;
+    const overstock = c.qty > avail;
+    return '<tr>' +
+      '<td class="sku">'+esc(c.sku)+'</td>' +
+      '<td>'+esc(c.description)+'</td>' +
+      '<td>'+condLabels[c.condition]+'</td>' +
+      '<td><input type="number" value="'+c.qty+'" min="1" onchange="updateCartQty('+i+',this.value)"></td>' +
+      '<td style="color:'+(overstock?'var(--red)':'var(--text-dim)')+'">'+avail+'</td>' +
+      '<td><button class="cart-remove" onclick="removeCartItem('+i+')">&times;</button></td></tr>';
+  }).join('');
+  document.getElementById('cartToggleBtn').innerHTML = '&#128722; Cart (' + cartItems.length + ')';
+}
+
+function updateCartQty(idx, val) { cartItems[idx].qty = parseInt(val) || 1; renderCart(); }
+function removeCartItem(idx) { cartItems.splice(idx, 1); renderCart(); }
+function clearCart() { cartItems = []; renderCart(); document.getElementById('cartPoNumber').value = ''; document.getElementById('cartDestination').value = ''; document.getElementById('cartNotes').value = ''; }
+
+async function confirmSignOut() {
+  if (cartItems.length === 0) { alert('Cart is empty'); return; }
+  const poNumber = document.getElementById('cartPoNumber').value.trim() || 'PO-' + Date.now();
+  const destination = document.getElementById('cartDestination').value.trim();
+  const notes = document.getElementById('cartNotes').value.trim();
+  const includeInvoice = document.getElementById('cartIncludeInvoice').checked;
+
+  // Validate stock availability
+  for (const c of cartItems) {
+    const item = stockData.find(s => (s.id !== undefined ? s.id : stockData.indexOf(s)) == c.stockId);
+    if (!item || (item[c.condition]||0) < c.qty) {
+      alert('Insufficient stock for ' + c.sku + ' (' + (c.condition.replace('_',' ')) + '). Available: ' + (item ? item[c.condition]||0 : 0));
+      return;
+    }
+  }
+  if (!confirm('Sign out ' + cartItems.length + ' item(s) under ' + poNumber + '?')) return;
+
+  try {
+    const resp = await fetch('/api/sign-out', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ po_number: poNumber, destination, notes, include_invoice: includeInvoice, items: cartItems })
+    });
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+    if (data.ok) {
+      stockData = data.stock || stockData;
+      renderStock();
+      generateDocuments(poNumber, destination, notes, includeInvoice, cartItems, data.sign_out_id);
+      clearCart();
+      document.getElementById('cartPanel').classList.remove('open');
+      loadPoHistory();
+    } else {
+      alert('Error: ' + (data.error || 'Unknown'));
+    }
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+// ============ PO HISTORY ============
+async function loadPoHistory() {
+  try {
+    const resp = await fetch('/api/sign-outs');
+    if (resp.status === 401) return;
+    const data = await resp.json();
+    poHistory = data.sign_outs || [];
+    renderPoHistory();
+  } catch (e) { console.error('PO history load error:', e); }
+}
+
+function renderPoHistory() {
+  const wrap = document.getElementById('poHistoryWrap');
+  if (!poHistory.length) { wrap.innerHTML = '<div style="color:var(--text-dim);font-size:13px;padding:8px 0">No sign-outs yet.</div>'; return; }
+  let html = '<table class="po-history-table"><thead><tr><th>PO #</th><th>Date</th><th>Destination</th><th>Items</th><th>By</th><th>Docs</th></tr></thead><tbody>';
+  poHistory.forEach(po => {
+    const items = typeof po.items === 'string' ? JSON.parse(po.items) : (po.items||[]);
+    const totalQty = items.reduce((s,i) => s + (i.qty||0), 0);
+    const date = po.created_at ? new Date(po.created_at).toLocaleDateString('en-GB') : '-';
+    html += '<tr><td style="font-weight:600;color:var(--accent-light)">'+esc(po.po_number)+'</td>' +
+      '<td>'+date+'</td><td>'+esc(po.destination||'-')+'</td>' +
+      '<td>'+totalQty+' unit(s), '+items.length+' SKU(s)</td>' +
+      '<td>'+esc(po.created_by||'-')+'</td>' +
+      '<td><button class="po-doc-btn" onclick=\'viewPoDoc('+JSON.stringify(po.id)+',\"packing-slip\")\'>Slip</button>' +
+      '<button class="po-doc-btn" onclick=\'viewPoDoc('+JSON.stringify(po.id)+',\"packing-list\")\'>List</button>' +
+      (po.include_invoice ? '<button class="po-doc-btn" onclick=\'viewPoDoc('+JSON.stringify(po.id)+',\"invoice\")\'>Invoice</button>' : '') +
+      '</td></tr>';
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+function viewPoDoc(poId, docType) {
+  window.open('/api/sign-out-doc?id=' + poId + '&type=' + docType, '_blank');
+}
+
+// ============ DOCUMENT GENERATION (client-side print-ready) ============
+function generateDocuments(poNumber, destination, notes, includeInvoice, items, signOutId) {
+  // Documents are generated server-side via /api/sign-out-doc endpoint
+  // This function is a hook for any client-side post-processing if needed
 }
 
 function esc(s) {
@@ -4014,6 +4488,48 @@ function filterWarrantyTickets() {
   `).join('');
 }
 
+function generateWarrantyRef(t) {
+  const d = t.created ? new Date(t.created) : new Date();
+  const yy = String(d.getFullYear()).slice(-2);
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  return 'WR-' + yy + mm + '-' + t.id;
+}
+
+function copyWarrantyRef(ref) {
+  navigator.clipboard.writeText(ref).then(() => {
+    const btn = event.target;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.innerHTML = 'Copy'; }, 1500);
+  });
+}
+
+function printWarrantyLabel(ticketId) {
+  const t = warrantyTickets.find(x => x.id === ticketId);
+  if (!t) return;
+  const ref = generateWarrantyRef(t);
+  const cf = t.custom_fields || {};
+  const model = cf['Model'] || cf['model'] || '';
+  const colour = cf['Colour'] || cf['colour'] || cf['Color'] || cf['color'] || '';
+  const product = [model, colour].filter(Boolean).join(' - ') || (t.device_info||[]).join(', ') || '-';
+  const w = window.open('', '_blank', 'width=400,height=300');
+  w.document.write(`<!DOCTYPE html><html><head><title>Label ${ref}</title>
+<style>
+  @media print { @page { margin: 5mm; size: 62mm 29mm; } body { margin: 0; } }
+  body { font-family: Arial, sans-serif; padding: 8px; }
+  .ref { font-size: 22px; font-weight: 800; letter-spacing: 1px; margin-bottom: 4px; }
+  .product { font-size: 11px; color: #555; margin-bottom: 2px; }
+  .customer { font-size: 10px; color: #777; }
+  .date { font-size: 10px; color: #999; }
+</style></head><body>
+  <div class="ref">${ref}</div>
+  <div class="product">${esc(product)}</div>
+  <div class="customer">${esc(t.customer_name||'')}</div>
+  <div class="date">${t.created ? new Date(t.created).toLocaleDateString('en-GB') : ''} | Ticket #${t.id}</div>
+  <script>window.onload=()=>{window.print();}<\/script>
+</body></html>`);
+  w.document.close();
+}
+
 function openWarrantyDetail(id) {
   const t = warrantyTickets.find(x => x.id === id);
   if (!t) return;
@@ -4100,6 +4616,16 @@ function openWarrantyDetail(id) {
       <div class="detail-row"><span class="label">Created</span><span class="value">${formatDate(t.created)}</span></div>
       <div class="detail-row"><span class="label">Last Updated</span><span class="value">${formatDate(t.updated)}</span></div>
       <div class="detail-row"><span class="label">Messages</span><span class="value">${t.messages_count}</span></div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Warranty Reference</h3>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span style="font-family:monospace;font-size:18px;font-weight:700;color:var(--accent-light);background:var(--card);padding:8px 16px;border:1px solid var(--border);border-radius:8px;letter-spacing:1px">${generateWarrantyRef(t)}</span>
+        <button class="btn" onclick="printWarrantyLabel(${t.id})" style="padding:6px 14px;font-size:12px">&#128424; Print Label</button>
+        <button class="btn btn-outline" onclick="copyWarrantyRef('${generateWarrantyRef(t)}')" style="padding:6px 14px;font-size:12px">Copy</button>
+      </div>
+      <div style="margin-top:6px;font-size:12px;color:var(--text-dim)">Use this reference to identify the unit on the box</div>
     </div>
 
     <div class="detail-section">
@@ -4304,6 +4830,7 @@ async function setWarrantyReturnStage(ticketId, stageIndex, stageKey, stageLabel
 // Load on start
 loadTickets();
 loadStock();
+loadPoHistory();
 loadActivityLog();
 // Don't load warranty tickets until tab is clicked
 </script>
@@ -4423,6 +4950,32 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self._safe_write(json.dumps({"stock": _load_stock()}).encode())
+
+        elif self.path == '/api/sign-outs':
+            result = supabase_request("sign_outs", params={"select": "*", "order": "id.desc", "limit": "50"})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self._safe_write(json.dumps({"sign_outs": result or []}).encode())
+
+        elif self.path.startswith('/api/sign-out-doc'):
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            po_id = qs.get('id', [''])[0]
+            doc_type = qs.get('type', ['packing-slip'])[0]
+            result = supabase_request("sign_outs", params={"id": f"eq.{po_id}", "select": "*"})
+            if not result:
+                self.send_response(404)
+                self.send_header('Content-Type', 'text/html')
+                self.end_headers()
+                self._safe_write(b"<h1>Not Found</h1>")
+                return
+            po = result[0]
+            items = json.loads(po['items']) if isinstance(po['items'], str) else po['items']
+            html = _generate_doc_html(po, items, doc_type)
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.end_headers()
+            self._safe_write(html.encode())
 
         elif self.path == '/api/activity-log':
             self.send_response(200)
@@ -5070,6 +5623,65 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self._safe_write(json.dumps({"ok": True, "stock": _load_stock()}).encode())
+
+        elif self.path == '/api/sign-out':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+            except Exception:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self._safe_write(json.dumps({"error": "Invalid JSON"}).encode())
+                return
+
+            po_number = data.get("po_number", "")
+            destination = data.get("destination", "")
+            notes = data.get("notes", "")
+            include_invoice = data.get("include_invoice", False)
+            items = data.get("items", [])
+            username = self._get_username()
+
+            # Deduct stock for each item
+            stock = _load_stock()
+            for cart_item in items:
+                stock_id = cart_item.get("stockId")
+                condition = cart_item.get("condition", "brand_new")
+                qty = cart_item.get("qty", 0)
+                for s in stock:
+                    sid = s.get("id", stock.index(s))
+                    if sid == stock_id:
+                        current = s.get(condition, 0)
+                        s[condition] = max(0, current - qty)
+                        if SUPABASE_URL:
+                            supabase_request("stock_items", method="PATCH",
+                                params={"id": f"eq.{stock_id}"},
+                                data={condition: s[condition]})
+                        break
+
+            if not SUPABASE_URL:
+                _save_stock(stock)
+
+            # Save sign-out record
+            sign_out_data = {
+                "po_number": po_number,
+                "destination": destination,
+                "notes": notes,
+                "created_by": username,
+                "include_invoice": include_invoice,
+                "items": json.dumps(items),
+            }
+            result = supabase_request("sign_outs", method="POST", data=sign_out_data)
+            sign_out_id = result[0]["id"] if result and len(result) > 0 else None
+
+            skus = ", ".join([f"{i.get('sku','')} x{i.get('qty',0)}" for i in items])
+            _add_activity(username, "Stock sign-out", f"{po_number}: {skus} → {destination}")
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self._safe_write(json.dumps({"ok": True, "stock": _load_stock(), "sign_out_id": sign_out_id}).encode())
 
         elif self.path == '/api/track-status':
             content_length = int(self.headers.get('Content-Length', 0))
