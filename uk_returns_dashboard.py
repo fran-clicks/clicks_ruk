@@ -1651,8 +1651,18 @@ def enrich_with_messages(ticket_summary):
             is_customer_msg = sender_type == "customer" or source_type in ("email", "contact-form", "chat")
             if is_customer_msg or msg.get("channel", "") not in ("internal-note",):
                 for p in ISSUE_PATTERNS:
-                    matches = re.findall(p, body_clean, re.IGNORECASE)
-                    issues_found.update(m.strip() for m in matches if len(m.strip()) > 4)
+                    for m in re.finditer(p, body_clean, re.IGNORECASE):
+                        captured = m.group(1) if m.lastindex else m.group(0)
+                        if len(captured.strip()) <= 4:
+                            continue
+                        # Get surrounding context: find sentence boundaries around the match
+                        start = max(0, body_clean.rfind('.', 0, m.start()) + 1)
+                        end = body_clean.find('.', m.end())
+                        if end == -1: end = min(len(body_clean), m.end() + 150)
+                        else: end = min(end + 1, m.start() + 300)
+                        context = body_clean[start:end].strip()
+                        if len(context) < 10: context = captured.strip()
+                        issues_found.add(context[:300])
 
             # Find order numbers (CT prefix)
             order_numbers.update(re.findall(ORDER_PATTERN, body_clean, re.IGNORECASE))
