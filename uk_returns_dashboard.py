@@ -4359,15 +4359,14 @@ function buildIssuesList(issues, elId, emptyMsg) {
   if (!el) return;
   if (!issues.length) { el.innerHTML = '<div style="color:var(--text-dim);font-size:13px">' + emptyMsg + '</div>'; return; }
   el.innerHTML = issues.map((item, idx) => {
-    const snippet = item.text.length > 80 ? item.text.slice(0, 77) + '...' : item.text;
-    const hasMore = item.text.length > 80;
+    const snippet = item.text.length > 60 ? item.text.slice(0, 57) + '...' : item.text;
     return '<div class="issue-item" id="issue-' + elId + '-' + idx + '">' +
-      '<div class="issue-header" ' + (hasMore ? 'onclick="toggleIssue(\'' + elId + '-' + idx + '\')" style="cursor:pointer"' : '') + '>' +
+      '<div class="issue-header" onclick="toggleIssue(\'' + elId + '-' + idx + '\')" style="cursor:pointer">' +
         '<span class="issue-ticket">#' + item.ticketId + '</span>' +
         '<span class="issue-snippet">' + esc(snippet) + '</span>' +
-        (hasMore ? '<span class="issue-expand">&#9660;</span>' : '') +
+        '<span class="issue-expand">&#9660;</span>' +
       '</div>' +
-      (hasMore ? '<div class="issue-full" style="display:none">' + esc(item.text) + '</div>' : '') +
+      '<div class="issue-full" style="display:none">' + esc(item.text) + '</div>' +
     '</div>';
   }).join('');
 }
