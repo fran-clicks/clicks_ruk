@@ -124,6 +124,7 @@ DASHBOARD_USERS = {
 # Supabase — cloud persistence (optional, falls back to local files)
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")  # anon key
+STOCK_API_KEY = os.environ.get("STOCK_API_KEY", "clicks-uk-stock-8c5f419a8027efd5")
 
 # Stock data file
 STOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_data.json")
@@ -5186,8 +5187,16 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # Public API routes (no auth)
+        # API key-protected stock endpoint (no session auth needed)
         if self.path == '/api/stock':
+            api_key = self.headers.get('X-API-Key', '')
+            if api_key != STOCK_API_KEY:
+                self.send_response(401)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self._safe_write(json.dumps({"error": "Invalid or missing API key. Pass X-API-Key header."}).encode())
+                return
             items = supabase_request("stock_items", params={"select": "*", "order": "sku.asc"}) or []
             out = []
             for item in items:
@@ -5363,6 +5372,18 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
         else:
             self.send_response(404)
+            self.end_headers()
+
+    def do_OPTIONS(self):
+        # CORS preflight for /api/stock
+        if self.path == '/api/stock':
+            self.send_response(204)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Headers', 'X-API-Key, Content-Type')
+            self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+            self.end_headers()
+        else:
+            self.send_response(405)
             self.end_headers()
 
     def do_POST(self):
