@@ -2940,7 +2940,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div class="stat-card closed"><div class="label">Process Rate</div><div class="value" id="anaProcessRate">-</div></div>
     </div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px">
-      <div style="flex:2;min-width:320px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
+      <div style="flex:1;min-width:320px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
           <h3 style="margin:0;font-size:14px;color:var(--text)">Returns Over Time</h3>
           <div style="display:flex;gap:4px">
@@ -2951,6 +2951,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         </div>
         <div id="anaChart" style="height:220px;overflow-x:auto;display:flex;align-items:flex-end;gap:2px"></div>
       </div>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px">
       <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
         <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Top Return Issues</h3>
         <div id="anaReasons"></div>
@@ -2977,7 +2979,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div class="stat-card closed"><div class="label">Processed</div><div class="value" id="anaWarProcessed">-</div></div>
     </div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px">
-      <div style="flex:2;min-width:320px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
+      <div style="flex:1;min-width:320px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
           <h3 style="margin:0;font-size:14px;color:var(--text)">Warranties Over Time</h3>
           <div style="display:flex;gap:4px">
@@ -2988,6 +2990,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         </div>
         <div id="anaWarChart" style="height:220px;overflow-x:auto;display:flex;align-items:flex-end;gap:2px"></div>
       </div>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px">
       <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
         <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Top Reported Issues</h3>
         <div id="anaWarIssues"></div>
