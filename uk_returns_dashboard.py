@@ -60,6 +60,7 @@ import base64
 import ssl
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import tempfile
 import io
 import secrets
@@ -629,54 +630,110 @@ MAX_PAGES = 50   # max pages to scan
 PAGE_SIZE = 100  # max per Gorgias API page
 
 
-def fetch_all_tagged_tickets():
-    """Fetch tickets with the 'UK Return' tag using Gorgias tag search."""
-    # First, try the Gorgias ticket search endpoint which supports tag filtering
-    all_tickets = []
+def _find_tag_id(tag_name):
+    """Look up a Gorgias tag ID by name."""
+    data = gorgias_request("tags", {"limit": 100})
+    if "error" in data:
+        return None
+    for tag in data.get("data", []):
+        if isinstance(tag, dict) and tag.get("name", "").strip().lower() == tag_name.lower():
+            return tag.get("id")
+    return None
 
-    # Method: use /api/tickets endpoint and filter by tag name via query param
-    # Gorgias supports: GET /api/tickets?tag=UK+Return
+
+def _fetch_tickets_by_tag(tag_filter):
+    """Fetch tickets filtered by tag — tries views API first, falls back to full scan."""
+    # --- Strategy 1: Find/create a Gorgias view filtered by this tag ---
+    tag_id = _find_tag_id(tag_filter)
+    if tag_id:
+        print(f"[Fetch] Found tag '{tag_filter}' with ID {tag_id}, trying views API...")
+        # Check if a dashboard view already exists for this tag
+        views_data = gorgias_request("views", {"limit": 100})
+        view_id = None
+        if "error" not in views_data:
+            for v in views_data.get("data", []):
+                if isinstance(v, dict) and f"dashboard-{tag_filter.replace(' ', '-')}" == v.get("slug", ""):
+                    view_id = v.get("id")
+                    break
+
+        # Try fetching tickets directly using tag_id filter on tickets endpoint
+        print(f"[Fetch] Trying direct ticket fetch with tag filter...")
+        all_tickets = []
+        cursor = None
+        page = 0
+        while page < MAX_PAGES:
+            params = {"limit": PAGE_SIZE, "order_by": "updated_datetime:desc"}
+            if cursor:
+                params["cursor"] = cursor
+            # Try multiple tag filter params that Gorgias may support
+            params["tag_id"] = tag_id
+            data = gorgias_request("tickets", params)
+            if "error" in data:
+                break
+            tickets = data.get("data", [])
+            if not isinstance(tickets, list) or not tickets:
+                break
+            # Verify tickets actually have the tag (in case param is ignored)
+            for t in tickets:
+                if not isinstance(t, dict):
+                    continue
+                raw_tags = t.get("tags") or []
+                tag_names = [tg.get("name", "").strip().lower() for tg in raw_tags if isinstance(tg, dict)]
+                if any(tag_filter.lower() in tn for tn in tag_names):
+                    all_tickets.append(t)
+            # If first page returned tickets but none matched, the param is being ignored — abort
+            if page == 0 and tickets and not all_tickets:
+                print(f"[Fetch] tag_id param ignored by API, falling back to full scan")
+                break
+            # If we got matches and ratio is high, the filter is working
+            if page == 0 and all_tickets and len(all_tickets) >= len(tickets) * 0.5:
+                print(f"[Fetch] Tag filter working — {len(all_tickets)}/{len(tickets)} matched on page 1")
+            cursor = data.get("meta", {}).get("next_cursor")
+            page += 1
+            if not cursor:
+                break
+            time.sleep(0.3)
+        if all_tickets:
+            print(f"  Found {len(all_tickets)} tagged tickets across {page} page(s) (filtered)")
+            return {"tickets": all_tickets, "error": None}
+
+    # --- Strategy 2: Full scan (fallback) ---
+    print(f"[Fetch] Full scan for '{tag_filter}' tagged tickets...")
+    all_tickets = []
     cursor = None
     page = 0
-
     while page < MAX_PAGES:
         params = {"limit": PAGE_SIZE, "order_by": "updated_datetime:desc"}
         if cursor:
             params["cursor"] = cursor
-
         data = gorgias_request("tickets", params)
         if "error" in data:
             if all_tickets:
                 print(f"  Warning: API error on page {page+1}, returning {len(all_tickets)} tickets found so far")
                 break
             return {"error": data["error"], "tickets": []}
-
         tickets = data.get("data", [])
         if not isinstance(tickets, list) or not tickets:
             break
-
         for t in tickets:
             if not isinstance(t, dict):
                 continue
             raw_tags = t.get("tags") or []
-            tag_names = []
-            for tag in raw_tags:
-                if isinstance(tag, dict):
-                    tag_names.append(tag.get("name", "").strip().lower())
-            # Match any variation: "uk return", "UK Return", "UK Returns", etc.
-            if any(TAG_FILTER.lower() in tn for tn in tag_names):
+            tag_names = [tg.get("name", "").strip().lower() for tg in raw_tags if isinstance(tg, dict)]
+            if any(tag_filter.lower() in tn for tn in tag_names):
                 all_tickets.append(t)
-
         cursor = data.get("meta", {}).get("next_cursor")
         page += 1
         if not cursor:
             break
-
-        # Throttle to avoid rate limits
         time.sleep(API_DELAY)
-
     print(f"  Found {len(all_tickets)} tagged tickets across {page} page(s)")
     return {"tickets": all_tickets, "error": None}
+
+
+def fetch_all_tagged_tickets():
+    """Fetch tickets with the 'UK Return' tag."""
+    return _fetch_tickets_by_tag(TAG_FILTER)
 
 
 def _background_fetch():
@@ -692,20 +749,36 @@ def _background_fetch():
             print(f"[Fetch] Error: {_cache['error']}")
             return
 
-        enriched = []
-        total = len(result["tickets"])
-        for i, ticket in enumerate(result["tickets"]):
-            print(f"  Enriching ticket {i+1}/{total}...")
-            summary = extract_ticket_details(ticket)
-            summary = enrich_with_messages(summary)
-            enriched.append(summary)
-            if i < total - 1:
-                time.sleep(0.5)
+        tickets = result["tickets"]
+        total = len(tickets)
+        print(f"[Fetch] Enriching {total} tickets (parallel, 5 workers)...")
 
-        _cache["enriched"] = enriched
+        # Extract basic details first (no API calls)
+        summaries = [extract_ticket_details(t) for t in tickets]
+
+        # Enrich in parallel — 5 concurrent workers to stay within rate limits
+        def _enrich(s):
+            return enrich_with_messages(s)
+
+        enriched = [None] * total
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = {pool.submit(_enrich, s): i for i, s in enumerate(summaries)}
+            done = 0
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    enriched[idx] = future.result()
+                except Exception as e:
+                    print(f"  Enrich error on ticket {summaries[idx].get('id')}: {e}")
+                    enriched[idx] = summaries[idx]
+                done += 1
+                if done % 10 == 0:
+                    print(f"  Enriched {done}/{total}...")
+
+        _cache["enriched"] = [e for e in enriched if e]
         _cache["timestamp"] = time.time()
         _cache["error"] = None
-        print(f"[Fetch] Done — {len(enriched)} tickets loaded")
+        print(f"[Fetch] Done — {len(_cache['enriched'])} tickets loaded")
     except Exception as e:
         _cache["error"] = str(e)
         print(f"[Fetch] Exception: {e}")
@@ -736,47 +809,8 @@ WARRANTY_TAG_FILTER = "uk warranty"
 
 
 def fetch_all_warranty_tickets():
-    """Fetch tickets with the 'UK Warranty' tag using Gorgias tag search."""
-    all_tickets = []
-    cursor = None
-    page = 0
-
-    while page < MAX_PAGES:
-        params = {"limit": PAGE_SIZE, "order_by": "updated_datetime:desc"}
-        if cursor:
-            params["cursor"] = cursor
-
-        data = gorgias_request("tickets", params)
-        if "error" in data:
-            if all_tickets:
-                print(f"  Warning: API error on page {page+1}, returning {len(all_tickets)} warranty tickets found so far")
-                break
-            return {"error": data["error"], "tickets": []}
-
-        tickets = data.get("data", [])
-        if not isinstance(tickets, list) or not tickets:
-            break
-
-        for t in tickets:
-            if not isinstance(t, dict):
-                continue
-            raw_tags = t.get("tags") or []
-            tag_names = []
-            for tag in raw_tags:
-                if isinstance(tag, dict):
-                    tag_names.append(tag.get("name", "").strip().lower())
-            if any(WARRANTY_TAG_FILTER.lower() in tn for tn in tag_names):
-                all_tickets.append(t)
-
-        cursor = data.get("meta", {}).get("next_cursor")
-        page += 1
-        if not cursor:
-            break
-
-        time.sleep(API_DELAY)
-
-    print(f"  Found {len(all_tickets)} warranty-tagged tickets across {page} page(s)")
-    return {"tickets": all_tickets, "error": None}
+    """Fetch tickets with the 'UK Warranty' tag."""
+    return _fetch_tickets_by_tag(WARRANTY_TAG_FILTER)
 
 
 def _background_fetch_warranties():
@@ -792,17 +826,28 @@ def _background_fetch_warranties():
             print(f"[Fetch] Warranty error: {_warranty_cache['error']}")
             return
 
-        enriched = []
-        total = len(result["tickets"])
-        for i, ticket in enumerate(result["tickets"]):
-            print(f"  Enriching warranty ticket {i+1}/{total}...")
-            summary = extract_ticket_details(ticket)
-            summary = enrich_with_messages(summary)
-            enriched.append(summary)
-            if i < total - 1:
-                time.sleep(0.5)
+        tickets = result["tickets"]
+        total = len(tickets)
+        print(f"[Fetch] Enriching {total} warranty tickets (parallel, 5 workers)...")
 
-        _warranty_cache["enriched"] = enriched
+        summaries = [extract_ticket_details(t) for t in tickets]
+
+        def _enrich(s):
+            return enrich_with_messages(s)
+
+        enriched = [None] * total
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = {pool.submit(_enrich, s): i for i, s in enumerate(summaries)}
+            done = 0
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    enriched[idx] = future.result()
+                except Exception as e:
+                    enriched[idx] = summaries[idx]
+                done += 1
+
+        _warranty_cache["enriched"] = [e for e in enriched if e]
         _warranty_cache["timestamp"] = time.time()
         _warranty_cache["error"] = None
         print(f"[Fetch] Done — {len(enriched)} warranty tickets loaded")
@@ -1347,7 +1392,7 @@ def enrich_with_messages(ticket_summary):
                                 break
                         if ticket_summary.get("shopify"):
                             break
-        time.sleep(0.3)
+        time.sleep(0.1)  # small delay for rate limiting
 
 
     data = gorgias_request(f"tickets/{tid}/messages", {"limit": 100})
