@@ -2860,6 +2860,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <button class="btn" onclick="openScanner()" style="white-space:nowrap">&#128247; Scan</button>
       <button class="btn btn-outline" onclick="toggleCart()" id="cartToggleBtn" style="white-space:nowrap">&#128722; Cart (0)</button>
       <button class="btn" onclick="openStockModal()">+ Add Product</button>
+      <button class="btn btn-outline" onclick="exportStockCSV()" style="white-space:nowrap">&#128229; Export CSV</button>
     </div>
   </div>
   <!-- Cart / PO Panel -->
@@ -3219,6 +3220,23 @@ function renderStock() {
 }
 
 function filterStock() { renderStock(); }
+
+function exportStockCSV() {
+  if (!stockData.length) return;
+  const headers = ['UPC','SKU','Description','Brand New','Non-Pristine','Damaged','Founders','Total'];
+  const rows = stockData.map(s => [
+    s.upc || '', s.sku || '', '"' + (s.description || '').replace(/"/g, '""') + '"',
+    s.brand_new || 0, s.non_pristine || 0, s.damaged || 0, s.founders || 0,
+    (s.brand_new||0) + (s.non_pristine||0) + (s.damaged||0) + (s.founders||0)
+  ]);
+  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  const blob = new Blob([csv], {type: 'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'clicks_uk_stock_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 
 function openStockModal(id) {
   const overlay = document.getElementById('stockModalOverlay');
@@ -5166,6 +5184,30 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Location', '/login')
             self.send_header('Set-Cookie', 'session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict')
             self.end_headers()
+            return
+
+        # Public API routes (no auth)
+        if self.path == '/api/stock':
+            items = supabase_request("stock_items", params={"select": "*", "order": "sku.asc"}) or []
+            out = []
+            for item in items:
+                total = (item.get("brand_new") or 0) + (item.get("non_pristine") or 0) + (item.get("damaged") or 0) + (item.get("founders") or 0)
+                out.append({
+                    "sku": item.get("sku", ""),
+                    "description": item.get("description", ""),
+                    "upc": item.get("upc", ""),
+                    "brand_new": item.get("brand_new", 0),
+                    "non_pristine": item.get("non_pristine", 0),
+                    "damaged": item.get("damaged", 0),
+                    "founders": item.get("founders", 0),
+                    "total": total,
+                    "updated_at": item.get("updated_at", ""),
+                })
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self._safe_write(json.dumps({"items": out, "count": len(out)}).encode())
             return
 
         # All other routes require auth
