@@ -229,16 +229,131 @@ def _generate_doc_html(po, items, doc_type):
     if created_at:
         try:
             dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-            date_str = dt.strftime("%d/%m/%Y")
+            date_str = dt.strftime("%d.%m.%Y")
         except Exception:
             date_str = created_at[:10]
     else:
-        date_str = datetime.now().strftime("%d/%m/%Y")
+        date_str = datetime.now().strftime("%d.%m.%Y")
 
     cond_labels = {"brand_new": "Brand New", "non_pristine": "Non-Pristine", "damaged": "Damaged", "founders": "Founders"}
     total_qty = sum(i.get("qty", 0) for i in items)
 
-    title_map = {"packing-slip": "Packing Slip", "packing-list": "Packing List", "invoice": "Commercial Invoice"}
+    # Packing List uses the Clicks Excel template style
+    if doc_type == "packing-list":
+        rows_html = ""
+        for item in items:
+            sku = html_mod.escape(item.get("sku", ""))
+            desc = html_mod.escape(item.get("description", ""))
+            cond = cond_labels.get(item.get("condition", ""), item.get("condition", ""))
+            qty = item.get("qty", 0)
+            rows_html += f"""<tr>
+              <td class="c">{sku}</td><td>{desc}</td><td class="c">{qty}</td>
+              <td class="c">{cond}</td><td class="c">-</td><td class="c">-</td>
+              <td class="c">-</td><td class="c">-</td><td class="c">-</td></tr>"""
+
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Packing List - {po_number}</title>
+<style>
+  @media print {{ @page {{ margin: 15mm; }} body {{ margin: 0; }} .no-print {{ display: none !important; }} }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: Arial, Helvetica, sans-serif; font-size: 9pt; color: #1a1a1a; max-width: 900px; margin: 0 auto; padding: 20px; }}
+  .btn-bar {{ margin: 12px 0 20px; display: flex; gap: 8px; }}
+  .btn-bar button {{ padding: 8px 20px; border: 1px solid #1F3864; background: #fff; cursor: pointer; border-radius: 4px; font-size: 13px; }}
+  .btn-bar button:hover {{ background: #f0f4fa; }}
+  .btn-bar button.primary {{ background: #1F3864; color: #fff; }}
+  .btn-bar button.primary:hover {{ background: #2E75B6; }}
+
+  .header-row {{ display: flex; align-items: center; margin-bottom: 8px; }}
+  .logo-cell {{ width: 180px; display: flex; align-items: center; justify-content: center; }}
+  .logo-cell .logo-text {{ font-size: 32px; font-weight: 900; letter-spacing: 2px; color: #1F3864; }}
+  .title-cell {{ flex: 1; background: #1F3864; color: #fff; text-align: center; padding: 18px 0; }}
+  .title-cell h1 {{ font-size: 18pt; font-weight: 700; letter-spacing: 1px; }}
+
+  .info-grid {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; border: 1px solid #b0b0b0; margin-bottom: 10px; }}
+  .info-grid .ig-row {{ display: contents; }}
+  .info-grid .ig-label {{ background: #D6E4F0; color: #1F3864; font-weight: 700; padding: 5px 10px; border-bottom: 1px solid #b0b0b0; font-size: 8.5pt; text-align: right; white-space: nowrap; }}
+  .info-grid .ig-value {{ background: #fff; padding: 5px 10px; border-bottom: 1px solid #b0b0b0; font-size: 8.5pt; border-left: 1px solid #b0b0b0; }}
+  .info-grid .ig-label-ship {{ background: #D6E4F0; color: #1F3864; font-weight: 700; padding: 5px 10px; border-bottom: 1px solid #b0b0b0; font-size: 8.5pt; text-align: right; white-space: nowrap; border-left: 1px solid #b0b0b0; }}
+  .info-grid .ig-value-ship {{ background: #fff; padding: 5px 10px; border-bottom: 1px solid #b0b0b0; font-size: 8.5pt; border-left: 1px solid #b0b0b0; }}
+
+  table.packing {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+  table.packing th {{ background: #1F3864; color: #fff; font-size: 8.5pt; font-weight: 700; padding: 7px 6px; text-align: center; border: 1px solid #1F3864; }}
+  table.packing td {{ padding: 5px 6px; border: 1px solid #b0b0b0; font-size: 8.5pt; }}
+  table.packing td.c {{ text-align: center; }}
+  table.packing tr.totals td {{ background: #2E75B6; color: #fff; font-weight: 700; font-size: 9pt; }}
+
+  .notes-header {{ background: #1F3864; color: #fff; font-weight: 700; padding: 5px 10px; font-size: 8.5pt; margin-top: 16px; }}
+  .notes-body {{ border: 1px solid #b0b0b0; border-top: none; padding: 12px 10px; min-height: 40px; font-size: 8.5pt; white-space: pre-wrap; }}
+
+  .footer-grid {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; margin-top: 16px; border: 1px solid #b0b0b0; }}
+  .footer-grid .fg-cell {{ padding: 8px 10px; font-size: 8.5pt; border-right: 1px solid #b0b0b0; }}
+  .footer-grid .fg-cell:last-child {{ border-right: none; }}
+  .footer-grid .fg-label {{ font-weight: 700; color: #1F3864; }}
+
+  .confidential {{ text-align: center; font-size: 7.5pt; color: #666; margin-top: 14px; font-style: italic; }}
+</style></head><body>
+<div class="no-print btn-bar">
+  <button class="primary" onclick="window.print()">&#128424; Print</button>
+  <button onclick="window.close()">Close</button>
+</div>
+
+<div class="header-row">
+  <div class="logo-cell"><span class="logo-text">CLICKS</span></div>
+  <div class="title-cell"><h1>PACKING LIST</h1></div>
+</div>
+
+<div class="info-grid">
+  <div class="ig-row">
+    <div style="display:flex"><span class="ig-label">Company Name:</span><span class="ig-value" style="flex:1">Clicks Technology Ltd</span></div>
+    <div style="display:flex"><span class="ig-label">PO Number:</span><span class="ig-value" style="flex:1">{po_number}</span></div>
+    <div style="display:flex"><span class="ig-label-ship">Ship To:</span><span class="ig-value-ship" style="flex:1">{destination or '-'}</span></div>
+  </div>
+  <div class="ig-row">
+    <div style="display:flex"><span class="ig-label">Address:</span><span class="ig-value" style="flex:1">1 Chalfont Park</span></div>
+    <div style="display:flex"><span class="ig-label">Reference / Order #:</span><span class="ig-value" style="flex:1">-</span></div>
+    <div style="display:flex"><span class="ig-label-ship">Address:</span><span class="ig-value-ship" style="flex:1">-</span></div>
+  </div>
+  <div class="ig-row">
+    <div style="display:flex"><span class="ig-label">City / State / Zip:</span><span class="ig-value" style="flex:1">Chalfont St Peter, SL9 0BG</span></div>
+    <div style="display:flex"><span class="ig-label">Ship Date:</span><span class="ig-value" style="flex:1">{date_str}</span></div>
+    <div style="display:flex"><span class="ig-label-ship">City / State / Zip:</span><span class="ig-value-ship" style="flex:1">-</span></div>
+  </div>
+  <div class="ig-row">
+    <div style="display:flex"><span class="ig-label">Country:</span><span class="ig-value" style="flex:1">United Kingdom</span></div>
+    <div style="display:flex"><span class="ig-label">Delivery Date:</span><span class="ig-value" style="flex:1">-</span></div>
+    <div style="display:flex"><span class="ig-label-ship">Country:</span><span class="ig-value-ship" style="flex:1">-</span></div>
+  </div>
+</div>
+
+<table class="packing">
+  <thead><tr>
+    <th>SKU</th><th>Description</th><th>Total Units</th><th>Condition</th>
+    <th>Cartons</th><th>L (cm)</th><th>W (cm)</th><th>H (cm)</th><th>Weight (kg)</th>
+  </tr></thead>
+  <tbody>
+    {rows_html}
+    <tr class="totals">
+      <td class="c" colspan="2">TOTALS</td><td class="c">{total_qty}</td>
+      <td class="c">{len(items)} SKU(s)</td>
+      <td class="c">-</td><td class="c">-</td><td class="c">-</td><td class="c">-</td><td class="c">-</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="notes-header">NOTES / SPECIAL INSTRUCTIONS</div>
+<div class="notes-body">{notes or ''}</div>
+
+<div class="footer-grid">
+  <div class="fg-cell"><span class="fg-label">Prepared By:</span> {created_by or '-'}</div>
+  <div class="fg-cell"><span class="fg-label">Approved By:</span> {created_by or '-'}</div>
+  <div class="fg-cell"><span class="fg-label">Date:</span> {date_str}</div>
+</div>
+
+<div class="confidential">CONFIDENTIAL &ndash; For logistics purposes only</div>
+</body></html>"""
+
+    # --- Packing Slip and Commercial Invoice (original format) ---
+    title_map = {"packing-slip": "Packing Slip", "invoice": "Commercial Invoice"}
     title = title_map.get(doc_type, "Document")
 
     rows_html = ""
@@ -249,23 +364,17 @@ def _generate_doc_html(po, items, doc_type):
         cond = cond_labels.get(item.get("condition", ""), item.get("condition", ""))
         qty = item.get("qty", 0)
         rows_html += f"<tr><td>{idx}</td><td>{sku}</td><td>{desc}</td>"
-        if doc_type == "packing-list":
-            rows_html += f"<td>{upc}</td>"
         rows_html += f"<td>{cond}</td><td style='text-align:center'>{qty}</td>"
         if doc_type == "invoice":
             rows_html += "<td style='text-align:right'>-</td><td style='text-align:right'>-</td>"
         rows_html += "</tr>"
 
-    # Totals row
-    rows_html += f"<tr style='font-weight:700;border-top:2px solid #333'><td colspan='{'5' if doc_type == 'packing-list' else '4'}' style='text-align:right'>Total:</td><td style='text-align:center'>{total_qty}</td>"
+    rows_html += f"<tr style='font-weight:700;border-top:2px solid #333'><td colspan='4' style='text-align:right'>Total:</td><td style='text-align:center'>{total_qty}</td>"
     if doc_type == "invoice":
         rows_html += "<td></td><td style='text-align:right'>-</td>"
     rows_html += "</tr>"
 
-    extra_cols = ""
     extra_headers = ""
-    if doc_type == "packing-list":
-        extra_headers = "<th>UPC</th>"
     if doc_type == "invoice":
         extra_headers = "<th style='text-align:right'>Unit Value</th><th style='text-align:right'>Total Value</th>"
 
@@ -973,12 +1082,21 @@ def get_cached_tickets(force_refresh=False):
 
 # ─── WARRANTY CACHE ──────────────────────────────────────────────────────────
 _warranty_cache = {"tickets": [], "enriched": [], "timestamp": 0, "loading": False, "error": None}
-WARRANTY_TAG_FILTER = "uk warranty"
+WARRANTY_TAG_FILTERS = ["uk warranty", "uk green warranty"]
 
 
 def fetch_all_warranty_tickets():
-    """Fetch tickets with the 'UK Warranty' tag."""
-    return _fetch_tickets_by_tag(WARRANTY_TAG_FILTER)
+    """Fetch tickets with 'UK Warranty' or 'UK Green Warranty' tags."""
+    all_tickets = []
+    seen_ids = set()
+    for tag_filter in WARRANTY_TAG_FILTERS:
+        result = _fetch_tickets_by_tag(tag_filter)
+        for t in result.get("tickets", []):
+            tid = t.get("id")
+            if tid and tid not in seen_ids:
+                seen_ids.add(tid)
+                all_tickets.append(t)
+    return {"tickets": all_tickets}
 
 
 def _background_fetch_warranties():
@@ -1058,6 +1176,20 @@ RETURN_TIMELINE_STAGES = [
     {"key": "received", "label": "Received", "tag": "return received"},
     {"key": "inspected", "label": "Inspected", "tag": "return inspected"},
     {"key": "processed", "label": "Processed", "tag": "return processed"},
+]
+
+WARRANTY_TIMELINE_STAGES = [
+    {"key": "initiated", "label": "Warranty Initiated", "tag": "warranty initiated"},
+    {"key": "received", "label": "Warranty Received", "tag": "warranty received"},
+    {"key": "inspected", "label": "Warranty Inspected", "tag": "warranty inspected"},
+    {"key": "processed", "label": "Claim Processed", "tag": "claim processed"},
+]
+
+GREEN_WARRANTY_TIMELINE_STAGES = [
+    {"key": "initiated", "label": "Warranty Initiated", "tag": "warranty initiated"},
+    {"key": "replacement_created", "label": "Replacement Created", "tag": "replacement created"},
+    {"key": "replacement_sent", "label": "Replacement Sent", "tag": "replacement sent"},
+    {"key": "processed", "label": "Claim Processed", "tag": "claim processed"},
 ]
 
 # Order number pattern: CT followed by alphanumeric characters
@@ -1226,6 +1358,28 @@ def extract_ticket_details(ticket):
             "done": i <= highest_stage,
         })
 
+    # Determine warranty type and build warranty-specific timeline
+    warranty_type = None
+    if "uk green warranty" in tags_lower:
+        warranty_type = "green"
+        w_stages = GREEN_WARRANTY_TIMELINE_STAGES
+    elif "uk warranty" in tags_lower:
+        warranty_type = "standard"
+        w_stages = WARRANTY_TIMELINE_STAGES
+
+    if warranty_type:
+        w_highest = -1
+        for i, stage in enumerate(w_stages):
+            if stage["tag"] in tags_lower:
+                w_highest = i
+        timeline = []
+        for i, stage in enumerate(w_stages):
+            timeline.append({
+                "key": stage["key"],
+                "label": stage["label"],
+                "done": i <= w_highest,
+            })
+
     return {
         "id": ticket_id,
         "subject": subject,
@@ -1244,6 +1398,7 @@ def extract_ticket_details(ticket):
         "order_numbers": list(order_numbers),
         "tracking_numbers": [],
         "device_info": [],
+        "warranty_type": warranty_type,
         "timeline": timeline,
         "messages_count": 0,
         "full_text": "",
@@ -1739,6 +1894,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Login — Clicks UK Returns</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231F3864'/%3E%3Ctext x='16' y='23' font-family='Arial' font-size='22' font-weight='bold' fill='white' text-anchor='middle'%3EC%3C/text%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #000000;
@@ -1866,6 +2022,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Clicks UK Returns Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231F3864'/%3E%3Ctext x='16' y='23' font-family='Arial' font-size='22' font-weight='bold' fill='white' text-anchor='middle'%3EC%3C/text%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #000000;
@@ -2740,6 +2897,29 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .scan-manual { display: flex; gap: 8px; margin-top: 12px; }
   .scan-manual input { flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; color: var(--text); font-size: 14px; outline: none; }
   .scan-manual input:focus { border-color: var(--accent); }
+  .scan-queue { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .scan-queue-list { max-height: 220px; overflow-y: auto; }
+  .scan-queue-item {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 6px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px; font-size: 13px;
+  }
+  .scan-queue-item .sq-info { flex: 1; min-width: 0; }
+  .scan-queue-item .sq-sku { font-weight: 600; color: var(--accent-light); }
+  .scan-queue-item .sq-desc { color: var(--text-dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .scan-queue-item select, .scan-queue-item input[type="number"] {
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 6px; color: var(--text); font-size: 12px; outline: none;
+  }
+  .scan-queue-item input[type="number"] { width: 55px; text-align: center; }
+  .scan-queue-item select { max-width: 110px; }
+  .scan-queue-item .sq-remove { background: none; border: none; color: var(--red, #f44336); cursor: pointer; font-size: 16px; padding: 2px 6px; }
+  .scan-queue-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .scan-add-form { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .scan-add-form select, .scan-add-form input[type="number"] {
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 10px; color: var(--text); font-size: 13px; outline: none;
+  }
+  .scan-add-form input[type="number"] { width: 65px; text-align: center; }
 
   /* PO / Cart */
   .cart-panel {
@@ -3060,6 +3240,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div id="wAddTicketForm" style="display:none">
     <div class="add-ticket-row">
       <input type="text" id="wAddTicketInput" placeholder="Enter ticket ID (e.g. 12345 or #12345)" onkeydown="if(event.key==='Enter')submitAddWarrantyTicket()">
+      <select id="wWarrantyTypeSelect" style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-size:13px">
+        <option value="standard">UK Warranty</option>
+        <option value="green">UK Green Warranty</option>
+      </select>
       <button class="btn-sm btn-add" id="wAddTicketBtn" onclick="submitAddWarrantyTicket()">Add & Tag</button>
     </div>
     <div id="wAddTicketMsg"></div>
@@ -3131,6 +3315,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <button class="btn" onclick="manualBarcodeLookup()">Look Up</button>
     </div>
     <div class="scan-result" id="scanResult"></div>
+
+    <!-- Scan Queue -->
+    <div class="scan-queue" id="scanQueueWrap" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <h4 style="margin:0;font-size:14px;color:var(--text)">&#128203; Scan Queue (<span id="scanQueueCount">0</span>)</h4>
+        <button class="btn btn-outline" style="font-size:11px;padding:4px 10px" onclick="clearScanQueue()">Clear All</button>
+      </div>
+      <div class="scan-queue-list" id="scanQueueList"></div>
+      <div class="scan-queue-actions">
+        <button class="btn" onclick="bulkAddToStock()" style="flex:1">&#128230; Add All to Stock</button>
+        <button class="btn" style="flex:1;background:var(--accent)" onclick="bulkAddToCart()">&#128722; Add All to Cart</button>
+      </div>
+    </div>
+
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
       <button class="btn btn-outline" onclick="closeScanner()">Close</button>
     </div>
@@ -3330,10 +3528,13 @@ async function deleteStock(id) {
 // ============ BARCODE SCANNER ============
 let html5QrCode = null;
 
+let scanQueue = [];
+
 function openScanner() {
   document.getElementById('scannerOverlay').classList.add('open');
   document.getElementById('scanResult').classList.remove('show');
   document.getElementById('scanManualInput').value = '';
+  renderScanQueue();
   startCamera();
 }
 
@@ -3395,16 +3596,132 @@ function lookupBarcode(code) {
   });
   if (match) {
     const total = (match.brand_new||0)+(match.non_pristine||0)+(match.damaged||0)+(match.founders||0);
-    result.innerHTML = '<div class="found">&#10003; Found: ' + esc(match.sku) + ' - ' + esc(match.description) + '</div>' +
-      '<div style="margin-top:6px;font-size:13px;color:var(--text-dim)">Stock: ' + total + ' units (New: '+(match.brand_new||0)+', NP: '+(match.non_pristine||0)+', Dmg: '+(match.damaged||0)+', Founders: '+(match.founders||0)+')</div>' +
-      '<div style="margin-top:8px;display:flex;gap:6px">' +
-      '<button class="btn" onclick="addToCartByUpc(\''+esc(code)+'\')">Add to Cart</button>' +
-      '<button class="btn btn-outline" onclick="editStock('+(match.id||0)+');closeScanner()">Edit</button></div>';
+    const matchId = match.id !== undefined ? match.id : stockData.indexOf(match);
+    result.innerHTML = '<div class="found">&#10003; ' + esc(match.sku) + ' - ' + esc(match.description) + '</div>' +
+      '<div style="margin-top:4px;font-size:12px;color:var(--text-dim)">Stock: ' + total + ' (New: '+(match.brand_new||0)+', NP: '+(match.non_pristine||0)+', Dmg: '+(match.damaged||0)+', Founders: '+(match.founders||0)+')</div>' +
+      '<div class="scan-add-form">' +
+        '<select id="scanCondition"><option value="brand_new">Brand New</option><option value="non_pristine">Non-Pristine</option><option value="damaged">Damaged</option><option value="founders">Founders</option></select>' +
+        '<input type="number" id="scanQty" value="1" min="1">' +
+        '<button class="btn" onclick="addToScanQueue('+matchId+')">+ Queue</button>' +
+      '</div>';
   } else {
     result.innerHTML = '<div class="not-found">&#x2717; No product found for UPC: ' + esc(code) + '</div>' +
       '<div style="margin-top:8px"><button class="btn" onclick="openStockModal();document.getElementById(\'stockUpc\').value=\''+esc(code)+'\';closeScanner()">Add as New Product</button></div>';
   }
   result.classList.add('show');
+}
+
+function addToScanQueue(stockId) {
+  const item = stockData.find(s => (s.id !== undefined ? s.id : stockData.indexOf(s)) == stockId);
+  if (!item) return;
+  const condition = document.getElementById('scanCondition').value;
+  const qty = parseInt(document.getElementById('scanQty').value) || 1;
+  // Check if same product+condition already in queue, merge qty
+  const existing = scanQueue.find(q => q.stockId === stockId && q.condition === condition);
+  if (existing) {
+    existing.qty += qty;
+  } else {
+    scanQueue.push({ stockId, sku: item.sku, description: item.description, upc: item.upc||'', condition, qty });
+  }
+  renderScanQueue();
+  // Reset scan result and refocus for next scan
+  document.getElementById('scanResult').classList.remove('show');
+  document.getElementById('scanManualInput').value = '';
+  document.getElementById('scanManualInput').focus();
+}
+
+function removeScanQueueItem(idx) {
+  scanQueue.splice(idx, 1);
+  renderScanQueue();
+}
+
+function updateScanQueueQty(idx, val) {
+  scanQueue[idx].qty = Math.max(1, parseInt(val) || 1);
+}
+
+function updateScanQueueCondition(idx, val) {
+  scanQueue[idx].condition = val;
+}
+
+function clearScanQueue() {
+  scanQueue = [];
+  renderScanQueue();
+}
+
+function renderScanQueue() {
+  const wrap = document.getElementById('scanQueueWrap');
+  const list = document.getElementById('scanQueueList');
+  const count = document.getElementById('scanQueueCount');
+  if (!scanQueue.length) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = 'block';
+  count.textContent = scanQueue.length;
+  const condLabels = {brand_new:'Brand New',non_pristine:'Non-Pristine',damaged:'Damaged',founders:'Founders'};
+  list.innerHTML = scanQueue.map((q, i) => {
+    return '<div class="scan-queue-item">' +
+      '<div class="sq-info"><div class="sq-sku">' + esc(q.sku) + '</div><div class="sq-desc">' + esc(q.description) + '</div></div>' +
+      '<select onchange="updateScanQueueCondition('+i+',this.value)">' +
+        '<option value="brand_new"'+(q.condition==='brand_new'?' selected':'')+'>Brand New</option>' +
+        '<option value="non_pristine"'+(q.condition==='non_pristine'?' selected':'')+'>Non-Pristine</option>' +
+        '<option value="damaged"'+(q.condition==='damaged'?' selected':'')+'>Damaged</option>' +
+        '<option value="founders"'+(q.condition==='founders'?' selected':'')+'>Founders</option>' +
+      '</select>' +
+      '<input type="number" value="'+q.qty+'" min="1" onchange="updateScanQueueQty('+i+',this.value)">' +
+      '<button class="sq-remove" onclick="removeScanQueueItem('+i+')">&times;</button>' +
+    '</div>';
+  }).join('');
+}
+
+async function bulkAddToStock() {
+  if (!scanQueue.length) return;
+  const items = scanQueue.map(q => ({ id: q.stockId, condition: q.condition, qty: q.qty }));
+  try {
+    const resp = await fetch('/api/stock', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ action: 'bulk_increment', items })
+    });
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const data = await resp.json();
+    if (data.ok) {
+      stockData = data.stock;
+      renderStock();
+      const count = scanQueue.length;
+      scanQueue = [];
+      renderScanQueue();
+      document.getElementById('scanResult').innerHTML = '<div class="found">&#10003; ' + count + ' item(s) added to stock</div>';
+      document.getElementById('scanResult').classList.add('show');
+    } else {
+      alert('Error: ' + (data.error || 'Unknown'));
+    }
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+function bulkAddToCart() {
+  if (!scanQueue.length) return;
+  scanQueue.forEach(q => {
+    const item = stockData.find(s => (s.id !== undefined ? s.id : stockData.indexOf(s)) == q.stockId);
+    if (!item) return;
+    const available = item[q.condition] || 0;
+    // Check if already in cart, merge
+    const existing = cartItems.find(c => c.stockId === q.stockId && c.condition === q.condition);
+    if (existing) {
+      existing.qty += q.qty;
+    } else {
+      cartItems.push({ stockId: q.stockId, sku: q.sku, description: q.description, upc: q.upc, condition: q.condition, qty: q.qty, available });
+    }
+  });
+  renderCart();
+  const count = scanQueue.length;
+  scanQueue = [];
+  renderScanQueue();
+  document.getElementById('scanResult').innerHTML = '<div class="found">&#10003; ' + count + ' item(s) added to cart</div>';
+  document.getElementById('scanResult').classList.add('show');
+  // Open cart panel
+  const panel = document.getElementById('cartPanel');
+  if (!panel.classList.contains('open')) toggleCart();
 }
 
 // ============ PO / CART SYSTEM ============
@@ -3737,6 +4054,11 @@ function isExpired(t) {
 
 function getProcessStatus(t, tagFilter) {
   const tags = (t.tags || []).map(tag => tag.toLowerCase());
+  if (tagFilter === 'uk warranty') {
+    if (tags.includes('claim processed')) return 'process-closed';
+    if (tags.includes('uk warranty') || tags.includes('uk green warranty')) return 'process-open';
+    return 'process-unknown';
+  }
   if (tags.includes('return processed')) return 'process-closed';
   if (tagFilter === 'uk return' && !tags.includes('return processed') && isExpired(t)) return 'process-expired';
   if (tags.includes(tagFilter)) return 'process-open';
@@ -3745,6 +4067,11 @@ function getProcessStatus(t, tagFilter) {
 
 function getProcessLabel(t, tagFilter) {
   const tags = (t.tags || []).map(tag => tag.toLowerCase());
+  if (tagFilter === 'uk warranty') {
+    if (tags.includes('claim processed')) return 'Closed';
+    if (tags.includes('uk warranty') || tags.includes('uk green warranty')) return 'Open';
+    return '-';
+  }
   if (tags.includes('return processed')) return 'Closed';
   if (tagFilter === 'uk return' && !tags.includes('return processed') && isExpired(t)) return 'Expired';
   if (tags.includes(tagFilter)) return 'Open';
@@ -4067,6 +4394,15 @@ function openLightbox(url) {
 }
 
 const STAGE_NAMES = ['Initiated', 'Sent', 'Received', 'Inspected', 'Processed'];
+const WARRANTY_STAGE_NAMES = ['Warranty Initiated', 'Warranty Received', 'Warranty Inspected', 'Claim Processed'];
+const GREEN_WARRANTY_STAGE_NAMES = ['Warranty Initiated', 'Replacement Created', 'Replacement Sent', 'Claim Processed'];
+
+function getWarrantyType(t) {
+  const tags = (t.tags || []).map(tag => tag.toLowerCase());
+  if (tags.includes('uk green warranty')) return 'green';
+  if (tags.includes('uk warranty')) return 'standard';
+  return null;
+}
 
 async function setReturnStage(ticketId, stageIndex, stageKey, stageLabel) {
   // Build confirmation message
@@ -4457,7 +4793,7 @@ function renderWarrantyAnalytics() {
     return;
   }
   let openCount = 0, processedCount = 0, issueList = [], stageMap = {}, productMap = {}, daysOpen = [];
-  const stages = ['Initiated','Sent','Received','Inspected','Processed'];
+  const stages = ['Warranty Initiated','Warranty Received','Warranty Inspected','Replacement Created','Replacement Sent','Claim Processed'];
   stages.forEach(s => stageMap[s] = 0);
 
   warrantyTickets.forEach(t => {
@@ -4496,7 +4832,7 @@ function renderWarrantyAnalytics() {
   buildIssuesList(issueList, 'anaWarIssues', 'No issues recorded');
   buildBarChart(productMap, 'anaWarProducts', '#74b9ff', 'No product data');
 
-  const stageColors = ['#ff6b00','#ff8533','#f59e0b','#ef4444','#22c55e'];
+  const stageColors = ['#ff6b00','#ff8533','#f59e0b','#3b82f6','#8b5cf6','#22c55e'];
   const maxStage = Math.max(...Object.values(stageMap), 1);
   document.getElementById('anaWarStages').innerHTML = stages.map((s, i) =>
     '<div class="ana-stage-row"><span class="ana-stage-label">' + s + '</span>' +
@@ -4660,11 +4996,11 @@ function updateWarrantyStats() {
   document.getElementById('wStatTotal').textContent = warrantyTickets.length;
   document.getElementById('wStatOpen').textContent = warrantyTickets.filter(t => {
     const tags = (t.tags || []).map(tag => tag.toLowerCase());
-    return tags.includes('uk warranty') && !tags.includes('return processed');
+    return (tags.includes('uk warranty') || tags.includes('uk green warranty')) && !tags.includes('claim processed');
   }).length;
   document.getElementById('wStatClosed').textContent = warrantyTickets.filter(t => {
     const tags = (t.tags || []).map(tag => tag.toLowerCase());
-    return tags.includes('return processed');
+    return tags.includes('claim processed');
   }).length;
 }
 
@@ -4686,12 +5022,12 @@ function filterWarrantyTickets() {
   if (warrantyFilter === 'open') {
     filtered = filtered.filter(t => {
       const tags = (t.tags || []).map(tag => tag.toLowerCase());
-      return tags.includes('uk warranty') && !tags.includes('return processed');
+      return (tags.includes('uk warranty') || tags.includes('uk green warranty')) && !tags.includes('claim processed');
     });
   } else if (warrantyFilter === 'closed') {
     filtered = filtered.filter(t => {
       const tags = (t.tags || []).map(tag => tag.toLowerCase());
-      return tags.includes('return processed');
+      return tags.includes('claim processed');
     });
   }
 
@@ -4724,9 +5060,12 @@ function filterWarrantyTickets() {
   empty.style.display = 'none';
   colHeaders.style.display = 'grid';
   list.style.display = 'flex';
-  list.innerHTML = filtered.map(t => `
+  list.innerHTML = filtered.map(t => {
+    const wType = getWarrantyType(t);
+    const wTypeBadge = wType === 'green' ? '<span style="background:#22c55e;color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;margin-left:4px">GREEN</span>' : '<span style="background:#3b82f6;color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;margin-left:4px">STD</span>';
+    return `
     <div class="ticket-row" onclick="openWarrantyDetail(${t.id})">
-      <div class="ticket-id">#${t.id}</div>
+      <div class="ticket-id">#${t.id} ${wTypeBadge}</div>
       <div class="ticket-subject">${esc(t.subject)}</div>
       <div class="ticket-id" style="font-size:12px">${(t.order_numbers||[]).join(', ') || '-'}</div>
       <div class="ticket-product">${(function(){
@@ -4752,7 +5091,7 @@ function filterWarrantyTickets() {
       <div><span class="status-badge status-${t.status}">${t.status}</span></div>
       <div><span class="process-badge ${getProcessStatus(t, 'uk warranty')}">${getProcessLabel(t, 'uk warranty')}</span></div>
     </div>
-  `).join('');
+  `;}).join('');
 }
 
 function generateWarrantyRef(t) {
@@ -5059,7 +5398,7 @@ async function submitAddWarrantyTicket() {
     const resp = await fetch('/api/add-warranty-ticket', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ticket_id: ticketId}),
+      body: JSON.stringify({ticket_id: ticketId, warranty_type: document.getElementById('wWarrantyTypeSelect').value}),
     });
     if (resp.status === 401) { window.location.href = '/login'; return; }
     const data = await resp.json();
@@ -5111,8 +5450,10 @@ async function removeWarrantyTicket(ticketId) {
 
 async function setWarrantyReturnStage(ticketId, stageIndex, stageKey, stageLabel) {
   const t = warrantyTickets.find(x => x.id === ticketId);
+  const wType = getWarrantyType(t);
+  const stageNames = wType === 'green' ? GREEN_WARRANTY_STAGE_NAMES : WARRANTY_STAGE_NAMES;
   const currentStages = (t?.timeline || []).filter(s => s.done).map(s => s.label);
-  const targetStages = STAGE_NAMES.slice(0, stageIndex + 1);
+  const targetStages = stageNames.slice(0, stageIndex + 1);
   const removedStages = currentStages.filter(s => !targetStages.includes(s));
 
   let msg = 'Set warranty progress to "' + stageLabel + '"?\n\n';
@@ -5123,10 +5464,10 @@ async function setWarrantyReturnStage(ticketId, stageIndex, stageKey, stageLabel
   if (!confirm(msg)) return;
 
   try {
-    const resp = await fetch('/api/set-return-stage', {
+    const resp = await fetch('/api/set-warranty-stage', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ticket_id: ticketId, stage_index: stageIndex}),
+      body: JSON.stringify({ticket_id: ticketId, stage_index: stageIndex, warranty_type: wType || 'standard'}),
     });
     if (resp.status === 401) { window.location.href = '/login'; return; }
     const data = await resp.json();
@@ -5134,9 +5475,9 @@ async function setWarrantyReturnStage(ticketId, stageIndex, stageKey, stageLabel
       const ticket = warrantyTickets.find(x => x.id === ticketId);
       if (ticket) {
         if (ticket.timeline) ticket.timeline.forEach((s, i) => { s.done = i <= stageIndex; });
-        const stageTags = ['Return Initiated','Return Sent','Return Received','Return Inspected','Return Processed'];
-        const newTags = (ticket.tags || []).filter(t => !stageTags.some(st => st.toLowerCase() === t.toLowerCase()));
-        for (let i = 0; i <= stageIndex; i++) newTags.push(stageTags[i]);
+        const allWarrantyTags = ['warranty initiated','warranty received','warranty inspected','claim processed','replacement created','replacement sent'];
+        const newTags = (ticket.tags || []).filter(t => !allWarrantyTags.includes(t.toLowerCase()));
+        for (let i = 0; i <= stageIndex; i++) newTags.push(stageNames[i]);
         ticket.tags = newTags;
         filterWarrantyTickets();
         openWarrantyDetail(ticketId);
@@ -5690,6 +6031,102 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self._safe_write(json.dumps({"ok": False, "error": str(e)}).encode())
 
+        elif self.path == '/api/set-warranty-stage':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+            except Exception:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self._safe_write(json.dumps({"error": "Invalid JSON"}).encode())
+                return
+
+            ticket_id = str(data.get("ticket_id", "")).strip()
+            stage_index = data.get("stage_index", -1)
+            warranty_type = data.get("warranty_type", "standard")
+
+            if warranty_type == "green":
+                w_stages = GREEN_WARRANTY_TIMELINE_STAGES
+            else:
+                w_stages = WARRANTY_TIMELINE_STAGES
+
+            if not ticket_id or not isinstance(stage_index, int) or stage_index < 0 or stage_index >= len(w_stages):
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self._safe_write(json.dumps({"ok": False, "error": "Invalid ticket ID or stage"}).encode())
+                return
+
+            # Fetch current ticket tags
+            ticket = gorgias_request(f"tickets/{ticket_id}")
+            if not isinstance(ticket, dict) or ticket.get("error"):
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self._safe_write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket.get('error', '')}"}).encode())
+                return
+
+            current_tags = ticket.get("tags") or []
+            # All warranty stage tags from both types
+            all_warranty_stage_tags = {"warranty initiated", "warranty received", "warranty inspected", "claim processed", "replacement created", "replacement sent"}
+            # Tags to ADD: all stages up to and including the target
+            tags_to_add = {w_stages[i]["tag"] for i in range(stage_index + 1)}
+
+            # Build new tag list: keep non-warranty-stage tags + add correct stage tags
+            new_tags = []
+            seen = set()
+            for t in current_tags:
+                if not isinstance(t, dict):
+                    continue
+                tname = t.get("name", "")
+                tname_lower = tname.lower()
+                if tname_lower in all_warranty_stage_tags:
+                    if tname_lower in tags_to_add:
+                        seen.add(tname_lower)
+                        new_tags.append({"name": tname})
+                    # else skip (remove it)
+                    continue
+                new_tags.append({"name": tname})
+
+            # Add any missing stage tags up to target
+            for tag in tags_to_add:
+                if tag not in seen:
+                    new_tags.append({"name": tag.title()})
+
+            # PUT updated tags to Gorgias
+            tag_url = f"{BASE_URL}/tickets/{ticket_id}"
+            tag_body = json.dumps({"tags": new_tags}).encode()
+            credentials = base64.b64encode(f"{GORGIAS_EMAIL}:{GORGIAS_API_KEY}".encode()).decode()
+            req = urllib.request.Request(tag_url, data=tag_body, method="PUT")
+            req.add_header("Authorization", f"Basic {credentials}")
+            req.add_header("Content-Type", "application/json")
+            req.add_header("User-Agent", "ClicksDashboard/1.0")
+
+            ctx = ssl.create_default_context()
+            try:
+                with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+                    resp_data = json.loads(resp.read().decode())
+                _warranty_cache["timestamp"] = 0  # Invalidate cache
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                stage_label = w_stages[stage_index]["label"]
+                _add_activity(self._get_username(), "Changed warranty progress", f"Set ticket {ticket_id} to '{stage_label}'")
+                self._safe_write(json.dumps({"ok": True, "message": f"Warranty progress set to {stage_label}"}).encode())
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode() if e.fp else ""
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self._safe_write(json.dumps({"ok": False, "error": f"Failed: HTTP {e.code} {err_body[:200]}"}).encode())
+            except Exception as e:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self._safe_write(json.dumps({"ok": False, "error": str(e)}).encode())
+
         elif self.path == '/api/add-ticket':
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)
@@ -5864,16 +6301,19 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             current_tags = ticket.get("tags") or []
             tag_names = [t.get("name", "").lower() for t in current_tags if isinstance(t, dict)]
 
-            if "uk warranty" in tag_names:
+            if "uk warranty" in tag_names or "uk green warranty" in tag_names:
                 _warranty_cache["timestamp"] = 0
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self._safe_write(json.dumps({"ok": True, "message": "Ticket already has UK Warranty tag"}).encode())
+                self._safe_write(json.dumps({"ok": True, "message": "Ticket already has a warranty tag"}).encode())
                 return
 
+            warranty_type = data.get("warranty_type", "standard")
+            tag_name = "UK Green Warranty" if warranty_type == "green" else "UK Warranty"
             new_tags = [{"name": t.get("name", "")} for t in current_tags if isinstance(t, dict)]
-            new_tags.append({"name": "UK Warranty"})
+            new_tags.append({"name": tag_name})
+            new_tags.append({"name": "Warranty Initiated"})
 
             tag_url = f"{BASE_URL}/tickets/{ticket_id}"
             tag_body = json.dumps({"tags": new_tags}).encode()
@@ -5891,8 +6331,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                _add_activity(self._get_username(), "Added warranty ticket", f"Ticket {ticket_id} tagged with UK Warranty")
-                self._safe_write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} tagged with UK Warranty"}).encode())
+                _add_activity(self._get_username(), "Added warranty ticket", f"Ticket {ticket_id} tagged with {tag_name}")
+                self._safe_write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} tagged with {tag_name}"}).encode())
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode() if e.fp else ""
                 self.send_response(200)
@@ -5934,7 +6374,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             current_tags = ticket.get("tags") or []
-            new_tags = [{"name": t.get("name", "")} for t in current_tags if isinstance(t, dict) and t.get("name", "").lower() != "uk warranty"]
+            warranty_tags_to_remove = {"uk warranty", "uk green warranty", "warranty initiated", "warranty received", "warranty inspected", "claim processed", "replacement created", "replacement sent"}
+            new_tags = [{"name": t.get("name", "")} for t in current_tags if isinstance(t, dict) and t.get("name", "").lower() not in warranty_tags_to_remove]
 
             tag_url = f"{BASE_URL}/tickets/{ticket_id}"
             tag_body = json.dumps({"tags": new_tags}).encode()
@@ -6020,6 +6461,34 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                         deleted = stock.pop(idx)
                         _save_stock(stock)
                         _add_activity(self._get_username(), "Deleted stock item", f"{deleted.get('sku','')} - {deleted.get('description','')}")
+
+            elif action == "bulk_increment":
+                bulk_items = data.get("items", [])
+                stock = _load_stock()
+                details = []
+                for bi in bulk_items:
+                    bi_id = bi.get("id")
+                    condition = bi.get("condition", "brand_new")
+                    qty = bi.get("qty", 1)
+                    if condition not in ("brand_new", "non_pristine", "damaged", "founders"):
+                        continue
+                    # Find item and increment
+                    target = None
+                    for s in stock:
+                        if s.get("id") == bi_id:
+                            target = s
+                            break
+                    if target:
+                        target[condition] = (target.get(condition) or 0) + qty
+                        if SUPABASE_URL:
+                            supabase_request("stock_items", method="PATCH",
+                                params={"id": f"eq.{bi_id}"},
+                                data={condition: target[condition]})
+                        details.append(f"{target.get('sku','')} +{qty} {condition.replace('_',' ')}")
+                if not SUPABASE_URL:
+                    _save_stock(stock)
+                if details:
+                    _add_activity(self._get_username(), "Bulk added to stock", "; ".join(details[:5]) + ("..." if len(details) > 5 else ""))
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
