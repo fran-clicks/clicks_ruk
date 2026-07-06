@@ -3183,6 +3183,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <div id="anaWarProducts"></div>
       </div>
     </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px">
+      <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
+        <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Warranty Reasons</h3>
+        <div id="anaWarReasons"></div>
+      </div>
+    </div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px 16px">
       <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px;max-height:500px;overflow-y:auto">
         <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Reported Issues</h3>
@@ -4792,7 +4798,7 @@ function renderWarrantyAnalytics() {
     ['anaWarTotal','anaWarOpen','anaWarAvgDays','anaWarProcessed'].forEach(id => { const el = document.getElementById(id); if(el) el.textContent = '-'; });
     return;
   }
-  let openCount = 0, processedCount = 0, issueList = [], stageMap = {}, productMap = {}, daysOpen = [];
+  let openCount = 0, processedCount = 0, issueList = [], stageMap = {}, productMap = {}, reasonMap = {}, daysOpen = [];
   const stages = ['Warranty Initiated','Warranty Received','Warranty Inspected','Replacement Created','Replacement Sent','Claim Processed'];
   stages.forEach(s => stageMap[s] = 0);
 
@@ -4820,6 +4826,8 @@ function renderWarrantyAnalytics() {
     const cf = t.custom_fields || {};
     const model = cf['Model'] || cf['model'] || '';
     if (model) productMap[model] = (productMap[model] || 0) + 1;
+    const reason = cf['Warranty Reason'] || cf['warranty_reason'] || '';
+    if (reason) reasonMap[reason] = (reasonMap[reason] || 0) + 1;
   });
 
   const avgDays = daysOpen.length ? Math.round(daysOpen.reduce((a,b) => a+b, 0) / daysOpen.length) : '-';
@@ -4831,6 +4839,7 @@ function renderWarrantyAnalytics() {
   buildTimeChart(warrantyTickets, warPeriod, 'anaWarChart');
   buildIssuesList(issueList, 'anaWarIssues', 'No issues recorded');
   buildBarChart(productMap, 'anaWarProducts', '#74b9ff', 'No product data');
+  buildBarChart(reasonMap, 'anaWarReasons', '#f59e0b', 'No warranty reasons recorded');
 
   const stageColors = ['#ff6b00','#ff8533','#f59e0b','#3b82f6','#8b5cf6','#22c55e'];
   const maxStage = Math.max(...Object.values(stageMap), 1);
@@ -5035,6 +5044,7 @@ function filterWarrantyTickets() {
     filtered = filtered.filter(t => {
       const searchable = [
         String(t.id),
+        generateWarrantyRef(t),
         t.subject,
         t.customer_name,
         t.customer_email,
@@ -5095,10 +5105,7 @@ function filterWarrantyTickets() {
 }
 
 function generateWarrantyRef(t) {
-  const d = t.created ? new Date(t.created) : new Date();
-  const yy = String(d.getFullYear()).slice(-2);
-  const mm = String(d.getMonth()+1).padStart(2,'0');
-  return 'WR-' + yy + mm + '-' + t.id;
+  return 'WR-' + String(t.id).slice(-5).padStart(5, '0');
 }
 
 function copyWarrantyRef(ref) {
@@ -5253,6 +5260,7 @@ function openWarrantyDetail(id) {
     <div class="detail-section">
       <h3>Warranty Details</h3>
       <div class="detail-row"><span class="label">Ticket ID</span><span class="value">#${t.id}</span></div>
+      ${(t.custom_fields||{})['Warranty Reason'] || (t.custom_fields||{})['warranty_reason'] ? `<div class="detail-row"><span class="label">Warranty Reason</span><span class="value" style="color:var(--accent-light);font-weight:600">${esc((t.custom_fields||{})['Warranty Reason'] || (t.custom_fields||{})['warranty_reason'] || '')}</span></div>` : ''}
       <div class="detail-row"><span class="label">Created</span><span class="value">${formatDate(t.created)}</span></div>
       <div class="detail-row"><span class="label">Last Updated</span><span class="value">${formatDate(t.updated)}</span></div>
       <div class="detail-row"><span class="label">Messages</span><span class="value">${t.messages_count}</span></div>
