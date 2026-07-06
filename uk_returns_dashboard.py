@@ -5218,7 +5218,8 @@ function openWarrantyDetail(id) {
     </div>
 
     <div class="detail-section">
-      <h3>Return Progress <span style="font-size:11px;font-weight:400;color:var(--text-dim);text-transform:none;letter-spacing:0">(click a stage to set)</span></h3>
+      <h3>Warranty Progress <span style="font-size:11px;font-weight:400;color:var(--text-dim);text-transform:none;letter-spacing:0">(click a stage to set)</span></h3>
+      <div style="margin-bottom:8px;font-size:12px"><span style="background:${getWarrantyType(t)==='green'?'#22c55e':'#3b82f6'};color:#fff;padding:2px 8px;border-radius:4px;font-weight:600">${getWarrantyType(t)==='green'?'Green Warranty':'Standard Warranty'}</span></div>
       <div class="timeline">
         ${(t.timeline||[]).map((s, i) => `
           <div class="timeline-step clickable" onclick="setWarrantyReturnStage(${t.id}, ${i}, '${s.key}', '${esc(s.label)}')">
