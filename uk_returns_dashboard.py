@@ -2859,15 +2859,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="stock-search">
     <div class="stock-toolbar">
       <input type="text" id="stockSearch" placeholder="Search by SKU, UPC or description..." oninput="filterStock()">
-      <button class="btn" onclick="openScanner()" style="white-space:nowrap">&#128247; Scan</button>
-      <button class="btn btn-outline" onclick="toggleCart()" id="cartToggleBtn" style="white-space:nowrap">&#128722; Cart (0)</button>
+      <button class="btn" onclick="openScanner()" style="white-space:nowrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M2 4h2v16H2zM6 4h1v16H6zM10 4h2v16h-2zM15 4h1v16h-1zM19 4h3v16h-3z"/></svg>Scan</button>
+      <button class="btn btn-outline" onclick="toggleCart()" id="cartToggleBtn" style="white-space:nowrap">&#128230; Cart (0)</button>
       <button class="btn" onclick="openStockModal()">+ Add Product</button>
       <button class="btn btn-outline" onclick="exportStockCSV()" style="white-space:nowrap">&#128229; Export CSV</button>
     </div>
   </div>
   <!-- Cart / PO Panel -->
   <div class="cart-panel" id="cartPanel">
-    <h3>&#128722; Sign-Out Cart <span style="font-weight:400;font-size:12px;color:var(--text-dim)" id="cartPoLabel"></span></h3>
+    <h3>&#128230; Sign-Out Cart <span style="font-weight:400;font-size:12px;color:var(--text-dim)" id="cartPoLabel"></span></h3>
     <div class="cart-header">
       <div><label>PO Number</label><input type="text" id="cartPoNumber" placeholder="Auto-generated" style="width:160px"></div>
       <div><label>Destination</label><input type="text" id="cartDestination" placeholder="e.g. Amazon FBA, Customer order..." style="width:240px"></div>
@@ -3462,7 +3462,7 @@ function renderCart() {
       '<td style="color:'+(overstock?'var(--red)':'var(--text-dim)')+'">'+avail+'</td>' +
       '<td><button class="cart-remove" onclick="removeCartItem('+i+')">&times;</button></td></tr>';
   }).join('');
-  document.getElementById('cartToggleBtn').innerHTML = '&#128722; Cart (' + cartItems.length + ')';
+  document.getElementById('cartToggleBtn').innerHTML = '&#128230; Cart (' + cartItems.length + ')';
 }
 
 function updateCartQty(idx, val) { cartItems[idx].qty = parseInt(val) || 1; renderCart(); }
