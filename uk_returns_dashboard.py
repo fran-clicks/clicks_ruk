@@ -2949,7 +2949,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <div id="anaChart" style="height:220px;overflow-x:auto;display:flex;align-items:flex-end;gap:2px"></div>
       </div>
       <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
-        <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Top Return Reasons</h3>
+        <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Top Return Issues</h3>
         <div id="anaReasons"></div>
       </div>
     </div>
@@ -4328,7 +4328,7 @@ function buildBarChart(map, elId, color, emptyMsg) {
 function renderReturnsAnalytics() {
   if (!allTickets.length) return;
   let totalValue = 0, valueCount = 0, initiatedCount = 0, processedCount = 0;
-  let refundDays = [], reasonMap = {}, stageMap = {}, processMap = {Open: 0, Closed: 0, Expired: 0};
+  let refundDays = [], issueMap = {}, stageMap = {}, processMap = {Open: 0, Closed: 0, Expired: 0};
   const stages = ['Initiated','Sent','Received','Inspected','Processed'];
   stages.forEach(s => stageMap[s] = 0);
 
@@ -4344,8 +4344,16 @@ function renderReturnsAnalytics() {
       const days = Math.round((new Date() - new Date(t.created)) / 86400000);
       if (days >= 0 && days < 365) refundDays.push(days);
     }
-    const reason = (t.custom_fields || {})['Return Reason'];
-    if (reason && reason !== '-') reasonMap[reason] = (reasonMap[reason] || 0) + 1;
+    // Deduplicate issues per ticket
+    const rawIssues = (t.issues || []).map(i => i.trim().toLowerCase().replace(/\s+/g,' '));
+    const seen = new Set();
+    rawIssues.sort((a,b) => a.length - b.length);
+    for (const issue of rawIssues) {
+      const short = issue.slice(0, 50);
+      let isDup = false;
+      for (const s of seen) { if (s.includes(short) || short.includes(s)) { isDup = true; break; } }
+      if (!isDup) { seen.add(short); const capped = issue.length > 60 ? issue.slice(0, 57) + '...' : issue; issueMap[capped] = (issueMap[capped] || 0) + 1; }
+    }
     const ps = getProcessLabel(t, 'uk return');
     if (ps === 'Open') processMap.Open++;
     else if (ps === 'Closed') processMap.Closed++;
@@ -4363,7 +4371,7 @@ function renderReturnsAnalytics() {
   document.getElementById('anaProcessRate').textContent = processRate;
 
   buildTimeChart(allTickets, anaPeriod, 'anaChart');
-  buildBarChart(reasonMap, 'anaReasons', 'var(--accent)', 'No return reasons recorded');
+  buildBarChart(issueMap, 'anaReasons', 'var(--accent)', 'No return issues detected');
 
   const stageColors = ['#ff6b00','#ff8533','#f59e0b','#ef4444','#22c55e'];
   const maxStage = Math.max(...Object.values(stageMap), 1);
@@ -4399,7 +4407,21 @@ function renderWarrantyAnalytics() {
       const days = Math.round((new Date() - new Date(t.created)) / 86400000);
       if (days >= 0 && days < 365) daysOpen.push(days);
     }
-    (t.issues || []).forEach(i => { issueMap[i] = (issueMap[i] || 0) + 1; });
+    // Deduplicate issues per ticket: normalize, take shortest unique
+    const rawIssues = (t.issues || []).map(i => i.trim().toLowerCase().replace(/\s+/g,' '));
+    const seen = new Set();
+    const uniqueIssues = [];
+    rawIssues.sort((a,b) => a.length - b.length);
+    for (const issue of rawIssues) {
+      const short = issue.slice(0, 50);
+      let isDup = false;
+      for (const s of seen) { if (s.includes(short) || short.includes(s)) { isDup = true; break; } }
+      if (!isDup) { seen.add(short); uniqueIssues.push(issue); }
+    }
+    uniqueIssues.forEach(i => {
+      const capped = i.length > 60 ? i.slice(0, 57) + '...' : i;
+      issueMap[capped] = (issueMap[capped] || 0) + 1;
+    });
     const tl = t.timeline || [];
     const cs = [...tl].reverse().find(s => s.done);
     if (cs) stageMap[cs.label] = (stageMap[cs.label] || 0) + 1;
@@ -4476,10 +4498,11 @@ function renderStockAnalytics() {
     const items = typeof po.items === 'string' ? JSON.parse(po.items) : (po.items||[]);
     const totalQty = items.reduce((s,i) => s + (i.qty||0), 0);
     const date = po.created_at ? new Date(po.created_at).toLocaleDateString('en-GB') : '-';
-    return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px">' +
-      '<span style="color:var(--accent-light);font-weight:600">' + esc(po.po_number) + '</span>' +
+    return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;gap:8px">' +
+      '<span style="color:var(--accent-light);font-weight:600;white-space:nowrap">' + esc(po.po_number) + '</span>' +
       '<span style="color:var(--text-dim)">' + totalQty + ' units</span>' +
-      '<span style="color:var(--text-dim)">' + date + '</span></div>';
+      '<span style="color:var(--text);white-space:nowrap">' + esc(po.created_by||'-') + '</span>' +
+      '<span style="color:var(--text-dim);white-space:nowrap">' + date + '</span></div>';
   }).join('') : '<div style="color:var(--text-dim);font-size:13px">No sign-outs yet</div>';
 }
 
