@@ -1553,14 +1553,15 @@ TRACKING_PATTERNS = [
 ]
 
 ISSUE_PATTERNS = [
+    # "issue/problem/fault with/is" something
+    r'(?:issue|problem|fault|defect|complaint)\s*(?:is|with|:)\s*([^\n\.]{5,80})',
     # Specific hardware/product issues
-    r'((?:screen|display|button|battery|charging|bluetooth|connectivity|keys?|keyboard|typing|hinge|speaker|microphone|camera|case|cover|port|usb|magnetic|magnet|stand|kickstand|folio)\s+(?:is\s+|was\s+)?(?:broken|cracked|scratched|loose|stuck|peeling|not\s*work|stopped|faulty|defective|damaged|missing|bent|warped|chipped)(?:[^\n\.]{0,40}))',
+    r'((?:screen|display|button|battery|charging|bluetooth|connectivity|keys?|keyboard|typing|hinge|speaker|microphone|camera|case|cover|port|usb|magnetic|magnet|stand|kickstand|folio)[^\n\.]{0,50}(?:issue|problem|broken|not\s*work|fault|defect|stuck|loose|cracked|damaged|scratched|peeling|stopped))',
+    r'((?:screen|display|button|battery|charging|bluetooth|connectivity|keys?|keyboard|typing|hinge|speaker|microphone|camera|case|cover|port|usb|magnetic|magnet|stand|kickstand|folio)\s+(?:is|was|has\s+been|seems?|appears?)\s+[^\n\.]{3,50})',
     # "won't/doesn't/can't" + action
-    r'((?:won\'?t|doesn\'?t|can\'?t|cannot|will\s*not|does\s*not)\s+(?:charge|connect|pair|turn\s*on|turn\s*off|work|type|respond|attach|fit|close|open|snap|stick|hold)[^\n\.]{0,40})',
-    # "issue/problem with" + specific thing
-    r'(?:issue|problem|fault|defect)\s+(?:with|on)\s+((?:the\s+)?(?:screen|display|button|battery|charging|bluetooth|keyboard|keys?|hinge|speaker|case|cover|stand|magnet|port)[^\n\.]{0,40})',
-    # Direct damage descriptions
-    r'((?:crack|scratch|dent|chip|peel|warp|bend|break|snap)\w*\s+(?:on|in|at|near)\s+(?:the\s+)?[^\n\.]{3,40})',
+    r'((?:won\'?t|doesn\'?t|can\'?t|cannot|will\s*not|does\s*not)\s+(?:charge|connect|pair|turn\s*on|turn\s*off|work|type|respond|attach|fit|close|open|snap|stick|hold|stay|lock|align)[^\n\.]{0,50})',
+    # Broken/damaged/not working descriptions
+    r'((?:broken|damaged|cracked|scratched|defective|faulty|malfunctioning|not\s*working|stopped\s*working)\s+[^\n\.]{3,50})',
 ]
 
 
@@ -2969,12 +2970,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px">
-      <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px;max-height:400px;overflow-y:auto">
-        <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Reported Issues</h3>
-        <div id="anaReasons"></div>
-      </div>
-    </div>
-    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px 16px">
       <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
         <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Returns by Stage</h3>
         <div id="anaStages"></div>
@@ -2982,6 +2977,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
         <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Process Status</h3>
         <div id="anaProcessStatus"></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px 16px">
+      <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px;max-height:500px;overflow-y:auto">
+        <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Reported Issues</h3>
+        <div id="anaReasons"></div>
       </div>
     </div>
   </div>
@@ -3008,12 +3009,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px">
-      <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px;max-height:400px;overflow-y:auto">
-        <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Reported Issues</h3>
-        <div id="anaWarIssues"></div>
-      </div>
-    </div>
-    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px 16px">
       <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
         <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Warranties by Stage</h3>
         <div id="anaWarStages"></div>
@@ -3021,6 +3016,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
         <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Top Products (Warranty)</h3>
         <div id="anaWarProducts"></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px 16px">
+      <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px;max-height:500px;overflow-y:auto">
+        <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Reported Issues</h3>
+        <div id="anaWarIssues"></div>
       </div>
     </div>
   </div>
