@@ -4409,6 +4409,35 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self._safe_write(json.dumps({"username": self._get_username()}).encode())
 
+        elif self.path == '/api/debug':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            # Test Gorgias connection
+            tag_test = _find_tag_id(TAG_FILTER)
+            gorgias_test = gorgias_request("tickets", {"limit": 1})
+            gorgias_ok = "error" not in gorgias_test
+            gorgias_total = len(gorgias_test.get("data", [])) if gorgias_ok else 0
+            # Test Supabase
+            sb_test = supabase_request("stock_items", params={"select": "id", "limit": "1"})
+            sb_ok = sb_test is not None
+            debug = {
+                "gorgias_connected": gorgias_ok,
+                "gorgias_error": gorgias_test.get("error") if not gorgias_ok else None,
+                "gorgias_sample_tickets": gorgias_total,
+                "tag_filter": TAG_FILTER,
+                "tag_id_found": tag_test,
+                "supabase_connected": sb_ok,
+                "supabase_url": SUPABASE_URL[:30] + "..." if SUPABASE_URL else "(not set)",
+                "cache_tickets": len(_cache["enriched"]),
+                "cache_loading": _cache["loading"],
+                "cache_error": _cache["error"],
+                "cache_age_sec": int(time.time() - _cache["timestamp"]) if _cache["timestamp"] else None,
+                "warranty_cache_tickets": len(_warranty_cache["enriched"]),
+                "warranty_cache_loading": _warranty_cache["loading"],
+            }
+            self._safe_write(json.dumps(debug, indent=2).encode())
+
         else:
             self.send_response(404)
             self.end_headers()
