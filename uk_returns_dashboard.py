@@ -5157,6 +5157,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         """Returns True if request is authenticated, False if redirected to login."""
         if self._is_authenticated():
             return True
+        token = self._get_session_token()
+        print(f"[AUTH FAIL] path={self.path} token={'present' if token else 'missing'} sessions_count={len(_sessions)}")
         # For API calls return 401, for pages redirect to login
         if self.path.startswith('/api/'):
             self.send_response(401)
@@ -5188,8 +5190,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # API key-protected stock endpoint (no session auth needed)
-        if self.path == '/api/stock':
+        # External API: API key-protected stock endpoint (no session auth needed)
+        if self.path == '/api/v1/stock':
             api_key = self.headers.get('X-API-Key', '')
             if api_key != STOCK_API_KEY:
                 self.send_response(401)
@@ -5376,8 +5378,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_OPTIONS(self):
-        # CORS preflight for /api/stock
-        if self.path == '/api/stock':
+        # CORS preflight for external API
+        if self.path == '/api/v1/stock':
             self.send_response(204)
             self.send_header('Access-Control-Allow-Origin', '*')
             self.send_header('Access-Control-Allow-Headers', 'X-API-Key, Content-Type')
