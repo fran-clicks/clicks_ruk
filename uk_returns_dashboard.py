@@ -475,9 +475,20 @@ _registered_17track = set()  # tracking numbers already registered with 17track
 
 
 # Carrier code hints for 17track (speeds up detection)
+# International postal format: 2 letters + 9 digits + 2-letter country code
+# Must match by country suffix, not blanket Royal Mail
 CARRIER_HINTS_17TRACK = [
-    (r'^[A-Z]{2}\d{9}[A-Z]{2}$', 3011),            # Royal Mail (intl format)
-    (r'^[A-Z]{2}\s*\d{4}\s*\d{4}\s*\d\s*[A-Z]{2}$', 3011),  # Royal Mail spaced
+    (r'^[A-Z]{2}\d{9}GB$', 3011),                   # Royal Mail (UK)
+    (r'^[A-Z]{2}\d{9}BE$', 4031),                   # Bpost (Belgium)
+    (r'^[A-Z]{2}\d{9}DE$', 3023),                   # Deutsche Post (Germany)
+    (r'^[A-Z]{2}\d{9}FR$', 3016),                   # La Poste (France)
+    (r'^[A-Z]{2}\d{9}NL$', 3028),                   # PostNL (Netherlands)
+    (r'^[A-Z]{2}\d{9}US$', 21051),                  # USPS (USA)
+    (r'^[A-Z]{2}\d{9}CN$', 3015),                   # China Post
+    (r'^[A-Z]{2}\d{9}IT$', 3041),                   # Poste Italiane (Italy)
+    (r'^[A-Z]{2}\d{9}ES$', 3042),                   # Correos (Spain)
+    (r'^[A-Z]{2}\d{9}IE$', 190482),                 # An Post (Ireland)
+    (r'^[A-Z]{2}\s*\d{4}\s*\d{4}\s*\d\s*GB$', 3011),  # Royal Mail spaced
     (r'^H[A-Z0-9]{10,20}$', 190143),                # Evri (Hermes UK)
     (r'^\d{14}$', 100003),                           # DPD UK
     (r'^1Z[A-Z0-9]{16}$', 100002),                   # UPS
@@ -3411,7 +3422,13 @@ function manualBarcodeLookup() {
 
 function lookupBarcode(code) {
   const result = document.getElementById('scanResult');
-  const match = stockData.find(s => (s.upc||'') === code);
+  // Camera may return EAN-13 (leading 0 + 12-digit UPC-A), try both formats
+  const codeNoLeading = code.startsWith('0') ? code.slice(1) : null;
+  const codeWithLeading = !code.startsWith('0') ? '0' + code : null;
+  const match = stockData.find(s => {
+    const upc = (s.upc||'');
+    return upc === code || (codeNoLeading && upc === codeNoLeading) || (codeWithLeading && upc === codeWithLeading);
+  });
   if (match) {
     const total = (match.brand_new||0)+(match.non_pristine||0)+(match.damaged||0)+(match.founders||0);
     result.innerHTML = '<div class="found">&#10003; Found: ' + esc(match.sku) + ' - ' + esc(match.description) + '</div>' +
