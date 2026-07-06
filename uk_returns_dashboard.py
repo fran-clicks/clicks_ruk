@@ -10,6 +10,44 @@ Usage:
   3. Open: http://localhost:5050
 """
 
+# ─── SUPABASE SCHEMA ────────────────────────────────────────────────────────
+# Run in Supabase SQL Editor to set up cloud persistence:
+#
+# CREATE TABLE stock_items (
+#   id BIGSERIAL PRIMARY KEY,
+#   sku TEXT NOT NULL,
+#   description TEXT DEFAULT '',
+#   brand_new INTEGER DEFAULT 0,
+#   non_pristine INTEGER DEFAULT 0,
+#   damaged INTEGER DEFAULT 0,
+#   founders INTEGER DEFAULT 0,
+#   created_at TIMESTAMPTZ DEFAULT NOW()
+# );
+#
+# CREATE TABLE activity_log (
+#   id BIGSERIAL PRIMARY KEY,
+#   timestamp TIMESTAMPTZ DEFAULT NOW(),
+#   user_name TEXT DEFAULT '',
+#   action TEXT DEFAULT '',
+#   details TEXT DEFAULT ''
+# );
+#
+# CREATE TABLE sessions (
+#   id BIGSERIAL PRIMARY KEY,
+#   token TEXT UNIQUE NOT NULL,
+#   username TEXT DEFAULT '',
+#   expires_at TIMESTAMPTZ NOT NULL,
+#   created_at TIMESTAMPTZ DEFAULT NOW()
+# );
+#
+# ALTER TABLE stock_items ENABLE ROW LEVEL SECURITY;
+# ALTER TABLE activity_log ENABLE ROW LEVEL SECURITY;
+# ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+# CREATE POLICY "Allow all for anon" ON stock_items FOR ALL USING (true) WITH CHECK (true);
+# CREATE POLICY "Allow all for anon" ON activity_log FOR ALL USING (true) WITH CHECK (true);
+# CREATE POLICY "Allow all for anon" ON sessions FOR ALL USING (true) WITH CHECK (true);
+# ─────────────────────────────────────────────────────────────────────────────
+
 import os
 import json
 import re
@@ -61,10 +99,45 @@ PARCELSAPP_API_KEY = os.environ.get("PARCELSAPP_API_KEY", "")
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Supabase — cloud persistence (optional, falls back to local files)
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")  # anon key
+
 # Stock data file
 STOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_data.json")
 
+def supabase_request(table, method="GET", params=None, data=None, headers_extra=None):
+    """Make a request to Supabase REST API."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None  # fallback to file-based
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params, doseq=True)
+
+    body = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(url, data=body, method=method)
+    req.add_header("apikey", SUPABASE_KEY)
+    req.add_header("Authorization", f"Bearer {SUPABASE_KEY}")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Prefer", "return=representation")
+    if headers_extra:
+        for k, v in headers_extra.items():
+            req.add_header(k, v)
+
+    ctx = ssl.create_default_context()
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+            raw = resp.read().decode()
+            return json.loads(raw) if raw else []
+    except Exception as e:
+        print(f"[Supabase] Error on {table}: {e}")
+        return None
+
 def _load_stock():
+    result = supabase_request("stock_items", params={"select": "*", "order": "id.asc"})
+    if result is not None:
+        return result
+    # Fallback to file
     try:
         with open(STOCK_FILE, "r") as f:
             return json.load(f)
@@ -82,39 +155,84 @@ SESSION_TTL = 86400 * 7  # 7 days
 # Activity log
 ACTIVITY_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "activity_log.json")
 
-def _load_activity_log():
+def _load_activity_log_file():
     try:
         with open(ACTIVITY_LOG_FILE, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+            data.reverse()  # newest first
+            return data
     except Exception:
         return []
 
-def _save_activity_log(log):
+def _save_activity_log_file(log):
     try:
         with open(ACTIVITY_LOG_FILE, "w") as f:
             json.dump(log[-500:], f)  # keep last 500 entries
     except Exception:
         pass
 
+def _load_activity_log():
+    result = supabase_request("activity_log", params={
+        "select": "*",
+        "order": "id.desc",
+        "limit": "100"
+    })
+    if result is not None:
+        return [{"timestamp": r["timestamp"], "user": r.get("user_name", ""), "action": r["action"], "details": r.get("details", "")} for r in result]
+    return _load_activity_log_file()
+
 def _add_activity(user, action, details=""):
-    log = _load_activity_log()
-    log.append({
+    entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "user": user,
+        "user_name": user,
         "action": action,
         "details": details,
-    })
-    _save_activity_log(log)
+    }
+    result = supabase_request("activity_log", method="POST", data=entry)
+    if result is None:
+        log = _load_activity_log_file()
+        log.append({"timestamp": entry["timestamp"], "user": user, "action": action, "details": details})
+        _save_activity_log_file(log)
 
 
 def _create_session(username=""):
     token = secrets.token_hex(32)
-    _sessions[token] = {"expires": time.time() + SESSION_TTL, "username": username}
+    from datetime import timedelta
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=SESSION_TTL)).isoformat()
+
+    result = supabase_request("sessions", method="POST", data={
+        "token": token,
+        "username": username,
+        "expires_at": expires_at
+    })
+    if result is None:
+        _sessions[token] = {"expires": time.time() + SESSION_TTL, "username": username}
     return token
 
 
 def _validate_session(token):
-    if not token or token not in _sessions:
+    if not token:
+        return False
+    # Try Supabase first
+    result = supabase_request("sessions", params={
+        "select": "expires_at",
+        "token": f"eq.{token}",
+        "limit": "1"
+    })
+    if result is not None:
+        if not result:
+            return False
+        expires_at = result[0].get("expires_at", "")
+        try:
+            exp_time = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if exp_time < datetime.now(timezone.utc):
+                supabase_request("sessions", method="DELETE", params={"token": f"eq.{token}"})
+                return False
+            return True
+        except:
+            return False
+    # Memory fallback
+    if token not in _sessions:
         return False
     if time.time() > _sessions[token]["expires"]:
         del _sessions[token]
@@ -123,14 +241,27 @@ def _validate_session(token):
 
 
 def _get_session_username(token):
-    if not token or token not in _sessions:
+    if not token:
+        return "Unknown"
+    result = supabase_request("sessions", params={
+        "select": "username",
+        "token": f"eq.{token}",
+        "limit": "1"
+    })
+    if result is not None:
+        return result[0].get("username", "Unknown") if result else "Unknown"
+    # Memory fallback
+    if token not in _sessions:
         return "Unknown"
     return _sessions[token].get("username", "Unknown")
 
 
 def _cleanup_sessions():
-    now = time.time()
-    expired = [t for t, data in _sessions.items() if now > data["expires"]]
+    now = datetime.now(timezone.utc).isoformat()
+    supabase_request("sessions", method="DELETE", params={"expires_at": f"lt.{now}"})
+    # Also clean memory fallback
+    now_ts = time.time()
+    expired = [t for t, data in _sessions.items() if now_ts > data["expires"]]
     for t in expired:
         del _sessions[t]
 
@@ -1362,18 +1493,18 @@ LOGIN_HTML = r"""<!DOCTYPE html>
 <title>Login — Clicks UK Returns</title>
 <style>
   :root {
-    --bg: #0f1117;
-    --card: #1a1d27;
-    --border: #2a2d3a;
-    --accent: #6c5ce7;
-    --accent-light: #a29bfe;
-    --text: #e2e4e9;
-    --text-dim: #7f8694;
-    --red: #ff6b6b;
+    --bg: #000000;
+    --card: #111111;
+    --border: #222222;
+    --accent: #ff6b00;
+    --accent-light: #ff8533;
+    --text: #ffffff;
+    --text-dim: #888888;
+    --red: #ef4444;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
@@ -1389,10 +1520,15 @@ LOGIN_HTML = r"""<!DOCTYPE html>
     width: 360px;
     text-align: center;
   }
+  .login-logo {
+    display: block;
+    margin: 0 auto 20px auto;
+    height: 32px;
+  }
   .login-box h1 {
     font-size: 20px;
     margin-bottom: 6px;
-    color: var(--accent-light);
+    color: var(--text);
   }
   .login-box p {
     font-size: 13px;
@@ -1423,7 +1559,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
     cursor: pointer;
     transition: opacity 0.2s;
   }
-  .login-box button:hover { opacity: 0.9; }
+  .login-box button:hover { background: var(--accent-light); }
   .login-box button:disabled { opacity: 0.5; cursor: not-allowed; }
   .error {
     color: var(--red);
@@ -1435,7 +1571,8 @@ LOGIN_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <div class="login-box">
-  <h1>Clicks UK Returns</h1>
+  <img src="https://cdn.prod.website-files.com/66f575e72f06b9820f448d43/66fbda43f42a9d6f770bbae4_clicks-logo.svg" alt="Clicks" class="login-logo">
+  <h1>UK Returns Dashboard</h1>
   <p>Enter the team password to access the dashboard</p>
   <div class="error" id="errorMsg">Incorrect password</div>
   <form onsubmit="doLogin(event)">
@@ -1483,45 +1620,62 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <title>Clicks UK Returns Dashboard</title>
 <style>
   :root {
-    --bg: #0f1117;
-    --card: #1a1d27;
-    --card-hover: #22263a;
-    --border: #2a2e3d;
-    --text: #e4e6eb;
-    --text-dim: #8b8fa3;
-    --accent: #6c5ce7;
-    --accent-light: #a29bfe;
-    --green: #00b894;
-    --yellow: #fdcb6e;
-    --red: #e17055;
+    --bg: #000000;
+    --card: #111111;
+    --card-bg: #111111;
+    --card-hover: #1a1a1a;
+    --border: #222222;
+    --text: #ffffff;
+    --text-dim: #888888;
+    --accent: #ff6b00;
+    --accent-light: #ff8533;
+    --accent-dim: rgba(255, 107, 0, 0.15);
+    --green: #22c55e;
+    --yellow: #f59e0b;
+    --red: #ef4444;
     --blue: #74b9ff;
-    --orange: #f39c12;
+    --orange: #ff6b00;
+    --header-bg: #000000;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
   }
   .header {
-    background: linear-gradient(135deg, #1a1d27 0%, #2d1f4e 100%);
+    background: var(--header-bg);
     border-bottom: 1px solid var(--border);
-    padding: 20px 32px;
+    padding: 16px 32px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 16px;
   }
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .header-logo {
+    height: 24px;
+    display: block;
+  }
   .header h1 {
-    font-size: 22px;
-    font-weight: 700;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
     display: flex;
     align-items: center;
     gap: 10px;
   }
-  .header h1 span { font-size: 26px; }
+  .header-divider {
+    width: 1px;
+    height: 20px;
+    background: var(--border);
+  }
   .header-right {
     display: flex;
     align-items: center;
@@ -1547,8 +1701,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     font-size: 12px;
     padding: 6px 12px;
     text-decoration: none;
+    border-radius: 8px;
   }
-  .btn-logout:hover { border-color: var(--red); color: var(--red); background: rgba(255,107,107,0.1); }
+  .btn-logout:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,0.1); }
   .btn-outline {
     background: transparent;
     border: 1px solid var(--border);
@@ -1562,7 +1717,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     gap: 0;
     padding: 0 32px;
     border-bottom: 1px solid var(--border);
-    background: var(--card);
+    background: var(--bg);
   }
   .tab-btn {
     padding: 12px 24px;
@@ -1576,7 +1731,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     transition: all 0.2s;
   }
   .tab-btn:hover { color: var(--text); }
-  .tab-btn.active { color: var(--accent-light); border-bottom-color: var(--accent); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
   .tab-content { display: none; }
   .tab-content.active { display: block; }
 
@@ -1642,7 +1797,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     overflow: hidden;
   }
   .stock-table th {
-    background: rgba(108,92,231,0.12);
+    background: rgba(255,107,0,0.12);
     color: var(--accent-light);
     font-size: 12px;
     font-weight: 600;
@@ -1758,16 +1913,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: 12px;
-    padding: 16px 24px;
+    padding: 20px 24px;
     min-width: 140px;
     flex: 1;
   }
-  .stat-card .label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
-  .stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+  .stat-card .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; font-weight: 500; }
+  .stat-card .value { font-size: 32px; font-weight: 700; margin-top: 6px; }
   .stat-card.open .value { color: var(--blue); }
   .stat-card.closed .value { color: var(--green); }
   .stat-card.pending .value { color: var(--yellow); }
-  .stat-card.total .value { color: var(--accent-light); }
+  .stat-card.total .value { color: var(--accent); }
 
   .search-section {
     padding: 16px 32px;
@@ -1808,7 +1963,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     flex-shrink: 0;
     transition: all 0.2s;
   }
-  .btn-add-ticket:hover { border-color: var(--accent); color: var(--accent); background: rgba(108,92,231,0.1); }
+  .btn-add-ticket:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
   .add-ticket-row {
     display: flex;
     gap: 8px;
@@ -1899,8 +2054,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     letter-spacing: 0.3px;
   }
   .status-open { background: rgba(116,185,255,0.15); color: var(--blue); }
-  .status-closed { background: rgba(0,184,148,0.15); color: var(--green); }
-  .status-snoozed { background: rgba(253,203,110,0.15); color: var(--yellow); }
+  .status-closed { background: rgba(34,197,94,0.15); color: var(--green); }
+  .status-snoozed { background: rgba(245,158,11,0.15); color: var(--yellow); }
   .order-num { font-family: monospace; font-weight: 600; color: var(--accent-light); }
   .add-tracking-row {
     display: flex;
@@ -2015,7 +2170,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .detail-row .value { font-weight: 500; text-align: right; max-width: 60%; word-break: break-word; }
   .tag-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .tag {
-    background: rgba(108,92,231,0.15);
+    background: rgba(255,107,0,0.15);
     color: var(--accent-light);
     padding: 3px 10px;
     border-radius: 12px;
@@ -2205,7 +2360,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .timeline-label.done { color: var(--green); font-weight: 600; }
   .timeline-step.clickable { cursor: pointer; }
-  .timeline-step.clickable:hover .timeline-dot { box-shadow: 0 0 0 3px rgba(108,92,231,0.4); }
+  .timeline-step.clickable:hover .timeline-dot { box-shadow: 0 0 0 3px rgba(255,107,0,0.4); }
   .timeline-step.clickable:hover .timeline-label { color: var(--accent-light); }
   .timeline-line {
     position: absolute;
@@ -2298,7 +2453,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <body>
 
 <div class="header">
-  <h1><span>&#x1F4E6;</span> Clicks UK Dashboard</h1>
+  <div class="header-left">
+    <img src="https://cdn.prod.website-files.com/66f575e72f06b9820f448d43/66fbda43f42a9d6f770bbae4_clicks-logo.svg" alt="Clicks" class="header-logo">
+    <div class="header-divider"></div>
+    <h1>UK Returns Dashboard</h1>
+  </div>
   <div class="header-right">
     <span id="lastUpdated" style="font-size:13px;color:var(--text-dim)"></span>
     <button class="btn" id="refreshBtn" onclick="refreshCurrentTab()">Refresh</button>
@@ -2505,7 +2664,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div class="stock-modal-overlay" id="stockModalOverlay" onclick="if(event.target===this)closeStockModal()">
   <div class="stock-modal">
     <h3 id="stockModalTitle">Add Product</h3>
-    <input type="hidden" id="stockEditIdx" value="-1">
+    <input type="hidden" id="stockEditId" value="-1">
     <label>SKU</label>
     <input type="text" id="stockSku" placeholder="e.g. CK-5100-1">
     <label>Description</label>
@@ -2596,7 +2755,7 @@ function renderStock() {
 
   function stockColor(v) { return v < 10 ? '#f44336' : v <= 25 ? '#ffc107' : '#4caf50'; }
   body.innerHTML = filtered.map((s, i) => {
-    const idx = stockData.indexOf(s);
+    const itemId = s.id !== undefined ? s.id : stockData.indexOf(s);
     const total = (s.brand_new||0) + (s.non_pristine||0) + (s.damaged||0) + (s.founders||0);
     return `<tr>
       <td class="sku">${esc(s.sku)}</td>
@@ -2607,8 +2766,8 @@ function renderStock() {
       <td class="num" style="color:${stockColor(s.founders||0)}">${s.founders||0}</td>
       <td class="num total-val" style="color:${stockColor(total)}">${total}</td>
       <td><div class="stock-actions">
-        <button class="stock-btn" onclick="editStock(${idx})" title="Edit">&#9998;</button>
-        <button class="stock-btn delete" onclick="deleteStock(${idx})" title="Delete">&#x2715;</button>
+        <button class="stock-btn" onclick="editStock(${itemId})" title="Edit">&#9998;</button>
+        <button class="stock-btn delete" onclick="deleteStock(${itemId})" title="Delete">&#x2715;</button>
       </div></td>
     </tr>`;
   }).join('');
@@ -2616,12 +2775,12 @@ function renderStock() {
 
 function filterStock() { renderStock(); }
 
-function openStockModal(idx) {
+function openStockModal(id) {
   const overlay = document.getElementById('stockModalOverlay');
   const title = document.getElementById('stockModalTitle');
-  document.getElementById('stockEditIdx').value = idx !== undefined ? idx : -1;
-  if (idx !== undefined && stockData[idx]) {
-    const s = stockData[idx];
+  document.getElementById('stockEditId').value = id !== undefined ? id : -1;
+  const s = id !== undefined ? stockData.find(x => (x.id !== undefined ? x.id : stockData.indexOf(x)) == id) : null;
+  if (s) {
     title.textContent = 'Edit Product';
     document.getElementById('stockSku').value = s.sku;
     document.getElementById('stockDesc').value = s.description;
@@ -2645,10 +2804,10 @@ function closeStockModal() {
   document.getElementById('stockModalOverlay').classList.remove('open');
 }
 
-function editStock(idx) { openStockModal(idx); }
+function editStock(id) { openStockModal(id); }
 
 async function saveStock() {
-  const idx = parseInt(document.getElementById('stockEditIdx').value);
+  const editId = parseInt(document.getElementById('stockEditId').value);
   const item = {
     sku: document.getElementById('stockSku').value.trim(),
     description: document.getElementById('stockDesc').value.trim(),
@@ -2662,7 +2821,7 @@ async function saveStock() {
     const resp = await fetch('/api/stock', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({action: idx >= 0 ? 'update' : 'add', index: idx, item}),
+      body: JSON.stringify({action: editId >= 0 ? 'update' : 'add', id: editId >= 0 ? editId : undefined, item}),
     });
     if (resp.status === 401) { window.location.href = '/login'; return; }
     const data = await resp.json();
@@ -2676,14 +2835,14 @@ async function saveStock() {
   } catch (e) { alert('Failed: ' + e.message); }
 }
 
-async function deleteStock(idx) {
-  const s = stockData[idx];
+async function deleteStock(id) {
+  const s = stockData.find(x => (x.id !== undefined ? x.id : stockData.indexOf(x)) == id);
   if (!confirm('Delete ' + s.sku + ' - ' + s.description + '?')) return;
   try {
     const resp = await fetch('/api/stock', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({action: 'delete', index: idx}),
+      body: JSON.stringify({action: 'delete', id: id}),
     });
     if (resp.status === 401) { window.location.href = '/login'; return; }
     const data = await resp.json();
@@ -3492,7 +3651,7 @@ function renderAnalytics() {
   ).join('') : '<div style="color:var(--text-dim);font-size:13px">No return reasons recorded</div>';
 
   // --- Stage Breakdown ---
-  const stageColors = ['#6c5ce7','#a29bfe','#ffc107','#ff7675','#4caf50'];
+  const stageColors = ['#ff6b00','#ff8533','#f59e0b','#ef4444','#22c55e'];
   const maxStage = Math.max(...Object.values(stageMap), 1);
   const stagesEl = document.getElementById('anaStages');
   stagesEl.innerHTML = stages.map((s, i) =>
@@ -4116,7 +4275,6 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             log = _load_activity_log()
-            log.reverse()  # newest first
             self.wfile.write(json.dumps({"log": log[:100]}).encode())
 
         elif self.path == '/api/current-user':
@@ -4674,7 +4832,6 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             action = data.get("action", "")
-            stock = _load_stock()
 
             if action == "add":
                 item = data.get("item", {})
@@ -4684,30 +4841,43 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(json.dumps({"ok": False, "error": "SKU required"}).encode())
                     return
-                stock.append(item)
-                _save_stock(stock)
+                result = supabase_request("stock_items", method="POST", data=item)
+                if result is None:
+                    stock = _load_stock()
+                    stock.append(item)
+                    _save_stock(stock)
                 _add_activity(self._get_username(), "Added stock item", f"{item.get('sku','')} - {item.get('description','')}")
 
             elif action == "update":
-                idx = data.get("index", -1)
                 item = data.get("item", {})
-                if 0 <= idx < len(stock):
-                    old_sku = stock[idx].get("sku", "")
-                    stock[idx] = item
-                    _save_stock(stock)
-                    _add_activity(self._get_username(), "Updated stock item", f"{item.get('sku', old_sku)} - {item.get('description','')}")
+                item_id = data.get("id")
+                if item_id and SUPABASE_URL:
+                    supabase_request("stock_items", method="PATCH", params={"id": f"eq.{item_id}"}, data=item)
+                else:
+                    idx = data.get("index", -1)
+                    stock = _load_stock()
+                    if 0 <= idx < len(stock):
+                        stock[idx] = item
+                        _save_stock(stock)
+                _add_activity(self._get_username(), "Updated stock item", f"{item.get('sku', '')} - {item.get('description','')}")
 
             elif action == "delete":
-                idx = data.get("index", -1)
-                if 0 <= idx < len(stock):
-                    deleted = stock.pop(idx)
-                    _save_stock(stock)
-                    _add_activity(self._get_username(), "Deleted stock item", f"{deleted.get('sku','')} - {deleted.get('description','')}")
+                item_id = data.get("id")
+                if item_id and SUPABASE_URL:
+                    supabase_request("stock_items", method="DELETE", params={"id": f"eq.{item_id}"})
+                    _add_activity(self._get_username(), "Deleted stock item", f"ID {item_id}")
+                else:
+                    idx = data.get("index", -1)
+                    stock = _load_stock()
+                    if 0 <= idx < len(stock):
+                        deleted = stock.pop(idx)
+                        _save_stock(stock)
+                        _add_activity(self._get_username(), "Deleted stock item", f"{deleted.get('sku','')} - {deleted.get('description','')}")
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": True, "stock": stock}).encode())
+            self.wfile.write(json.dumps({"ok": True, "stock": _load_stock()}).encode())
 
         elif self.path == '/api/track-status':
             content_length = int(self.headers.get('Content-Length', 0))
