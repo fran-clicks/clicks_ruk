@@ -102,6 +102,7 @@ DASHBOARD_USERS = {
     "kevin":    "d994c6459fc151d4e8f9bcf19c7fa0319476e820279dc862f2bb9193f1810392",
     "david":    "df8b6d1a5a77f3fb4a4de836ff291764cafb9cfe44eb43f6c0843590bbfa7acd",
     "karolina": "97207784a2d79258110019b6b737f1e67917da5027880072e6f3f8a30a439bb2",
+    "amber":    "0dc3bfea2cf44bad051f069ad6a6a55bef523bf3c23e8595e6203571b78a62f3",
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -4289,7 +4290,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
     def _safe_write(self, data):
         """Write response data, silently ignoring BrokenPipeError."""
         try:
-            self._safe_write(data)
+            self.wfile.write(data)
         except BrokenPipeError:
             pass
 
