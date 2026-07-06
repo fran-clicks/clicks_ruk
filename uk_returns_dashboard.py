@@ -95,8 +95,13 @@ TRACK17_API_KEY = os.environ.get("TRACK17_API_KEY", "")
 # Get your API key at: https://parcelsapp.com/dashboard
 PARCELSAPP_API_KEY = os.environ.get("PARCELSAPP_API_KEY", "")
 
-# Dashboard authentication — shared team password
-DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+# Dashboard authentication — individual user accounts (username → sha256 hash of password)
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")  # legacy fallback
+DASHBOARD_USERS = {
+    "kevin":    "d994c6459fc151d4e8f9bcf19c7fa0319476e820279dc862f2bb9193f1810392",
+    "david":    "df8b6d1a5a77f3fb4a4de836ff291764cafb9cfe44eb43f6c0843590bbfa7acd",
+    "karolina": "97207784a2d79258110019b6b737f1e67917da5027880072e6f3f8a30a439bb2",
+}
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Supabase — cloud persistence (optional, falls back to local files)
@@ -4298,11 +4303,20 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 data = {}
 
             password = data.get("password", "")
-            username = data.get("username", "Unknown").strip() or "Unknown"
-            if password == DASHBOARD_PASSWORD:
+            username = data.get("username", "").strip().lower()
+            pw_hash = hashlib.sha256(password.encode()).hexdigest()
+            # Check individual user accounts first, then legacy shared password
+            auth_ok = False
+            display_name = username.capitalize() if username else "Unknown"
+            if username and username in DASHBOARD_USERS:
+                auth_ok = (pw_hash == DASHBOARD_USERS[username])
+            elif DASHBOARD_PASSWORD and password == DASHBOARD_PASSWORD:
+                auth_ok = True
+                display_name = username.capitalize() if username else "Unknown"
+            if auth_ok:
                 _cleanup_sessions()
-                token = _create_session(username)
-                _add_activity(username, "Logged in")
+                token = _create_session(display_name)
+                _add_activity(display_name, "Logged in")
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 secure_flag = "; Secure" if os.environ.get("RENDER") else ""
@@ -4313,7 +4327,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": "Incorrect password"}).encode())
+                self.wfile.write(json.dumps({"ok": False, "error": "Invalid username or password"}).encode())
             return
 
         # All other POST routes require auth
