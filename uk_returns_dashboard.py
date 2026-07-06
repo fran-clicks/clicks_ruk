@@ -736,6 +736,51 @@ def fetch_all_tagged_tickets():
     return _fetch_tickets_by_tag(TAG_FILTER)
 
 
+def _save_ticket_cache_to_db(cache_key, enriched):
+    """Save enriched tickets to Supabase for instant load after restart."""
+    try:
+        data = json.dumps(enriched)
+        # Upsert: delete old, insert new
+        supabase_request("ticket_cache", method="DELETE", params={"cache_key": f"eq.{cache_key}"})
+        supabase_request("ticket_cache", method="POST", data={
+            "cache_key": cache_key,
+            "data": data,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        })
+        print(f"[Cache] Saved {len(enriched)} tickets to Supabase ({cache_key})")
+    except Exception as e:
+        print(f"[Cache] Failed to save to Supabase: {e}")
+
+
+def _load_ticket_cache_from_db(cache_key, max_age_minutes=30):
+    """Load enriched tickets from Supabase cache."""
+    try:
+        result = supabase_request("ticket_cache", params={
+            "select": "data,updated_at",
+            "cache_key": f"eq.{cache_key}",
+            "limit": "1"
+        })
+        if result and len(result) > 0:
+            updated = result[0].get("updated_at", "")
+            try:
+                updated_dt = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - updated_dt).total_seconds()
+                if age > max_age_minutes * 60:
+                    print(f"[Cache] DB cache for {cache_key} is {age/60:.0f}min old, will refresh")
+                    # Still return stale data for instant display
+                else:
+                    print(f"[Cache] DB cache for {cache_key} is {age/60:.0f}min old, valid")
+            except Exception:
+                pass
+            data = result[0].get("data", "[]")
+            tickets = json.loads(data) if isinstance(data, str) else data
+            print(f"[Cache] Loaded {len(tickets)} tickets from Supabase ({cache_key})")
+            return tickets
+    except Exception as e:
+        print(f"[Cache] Failed to load from Supabase: {e}")
+    return None
+
+
 def _background_fetch():
     """Fetch and enrich tickets in background thread."""
     if _cache["loading"]:
@@ -779,6 +824,9 @@ def _background_fetch():
         _cache["timestamp"] = time.time()
         _cache["error"] = None
         print(f"[Fetch] Done — {len(_cache['enriched'])} tickets loaded")
+
+        # Save to Supabase for instant load after restart
+        _save_ticket_cache_to_db("uk_returns", _cache["enriched"])
     except Exception as e:
         _cache["error"] = str(e)
         print(f"[Fetch] Exception: {e}")
@@ -793,6 +841,16 @@ def get_cached_tickets(force_refresh=False):
 
     if not force_refresh and cache_valid:
         return {"tickets": _cache["enriched"], "error": None, "cached": True}
+
+    # Try loading from Supabase DB cache if memory is empty (e.g. after restart)
+    if not _cache["enriched"] and not _cache["loading"]:
+        db_tickets = _load_ticket_cache_from_db("uk_returns")
+        if db_tickets:
+            _cache["enriched"] = db_tickets
+            _cache["timestamp"] = now - CACHE_TTL + 60  # mark as expiring soon so refresh triggers
+            # Still trigger background refresh for fresh data
+            threading.Thread(target=_background_fetch, daemon=True).start()
+            return {"tickets": _cache["enriched"], "error": None, "cached": True}
 
     # If loading, return whatever we have now
     if _cache["loading"]:
@@ -850,7 +908,8 @@ def _background_fetch_warranties():
         _warranty_cache["enriched"] = [e for e in enriched if e]
         _warranty_cache["timestamp"] = time.time()
         _warranty_cache["error"] = None
-        print(f"[Fetch] Done — {len(enriched)} warranty tickets loaded")
+        print(f"[Fetch] Done — {len(_warranty_cache['enriched'])} warranty tickets loaded")
+        _save_ticket_cache_to_db("uk_warranties", _warranty_cache["enriched"])
     except Exception as e:
         _warranty_cache["error"] = str(e)
         print(f"[Fetch] Warranty exception: {e}")
@@ -865,6 +924,15 @@ def get_cached_warranty_tickets(force_refresh=False):
 
     if not force_refresh and cache_valid:
         return {"tickets": _warranty_cache["enriched"], "error": None, "cached": True}
+
+    # Try Supabase cache on cold start
+    if not _warranty_cache["enriched"] and not _warranty_cache["loading"]:
+        db_tickets = _load_ticket_cache_from_db("uk_warranties")
+        if db_tickets:
+            _warranty_cache["enriched"] = db_tickets
+            _warranty_cache["timestamp"] = now - CACHE_TTL + 60
+            threading.Thread(target=_background_fetch_warranties, daemon=True).start()
+            return {"tickets": _warranty_cache["enriched"], "error": None, "cached": True}
 
     if _warranty_cache["loading"]:
         return {"tickets": _warranty_cache["enriched"], "error": None, "cached": True, "loading": True}
@@ -4218,6 +4286,13 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]}")
 
+    def _safe_write(self, data):
+        """Write response data, silently ignoring BrokenPipeError."""
+        try:
+            self._safe_write(data)
+        except BrokenPipeError:
+            pass
+
     def _get_session_token(self):
         cookie_header = self.headers.get("Cookie", "")
         cookies = http.cookies.SimpleCookie()
@@ -4245,7 +4320,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(401)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({"error": "Not authenticated"}).encode())
+            self._safe_write(json.dumps({"error": "Not authenticated"}).encode())
         else:
             self.send_response(302)
             self.send_header('Location', '/login')
@@ -4258,7 +4333,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
             self.end_headers()
-            self.wfile.write(LOGIN_HTML.encode())
+            self._safe_write(LOGIN_HTML.encode())
             return
 
         if self.path == '/auth/logout':
@@ -4279,7 +4354,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
             self.end_headers()
-            self.wfile.write(DASHBOARD_HTML.encode())
+            self._safe_write(DASHBOARD_HTML.encode())
 
         elif self.path in ('/api/tickets', '/api/tickets?refresh=1'):
             force = 'refresh=1' in self.path
@@ -4289,7 +4364,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
             result = get_cached_tickets(force_refresh=force)
-            self.wfile.write(json.dumps(result).encode())
+            self._safe_write(json.dumps(result).encode())
 
         elif self.path in ('/api/warranty-tickets', '/api/warranty-tickets?refresh=1'):
             force = 'refresh=1' in self.path
@@ -4299,7 +4374,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
             result = get_cached_warranty_tickets(force_refresh=force)
-            self.wfile.write(json.dumps(result).encode())
+            self._safe_write(json.dumps(result).encode())
 
         elif self.path.startswith('/api/ticket/'):
             ticket_id = self.path.split('/')[-1]
@@ -4310,28 +4385,28 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if "error" not in data:
                 summary = extract_ticket_details(data)
                 summary = enrich_with_messages(summary)
-                self.wfile.write(json.dumps(summary).encode())
+                self._safe_write(json.dumps(summary).encode())
             else:
-                self.wfile.write(json.dumps(data).encode())
+                self._safe_write(json.dumps(data).encode())
 
         elif self.path == '/api/stock':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({"stock": _load_stock()}).encode())
+            self._safe_write(json.dumps({"stock": _load_stock()}).encode())
 
         elif self.path == '/api/activity-log':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             log = _load_activity_log()
-            self.wfile.write(json.dumps({"log": log[:100]}).encode())
+            self._safe_write(json.dumps({"log": log[:100]}).encode())
 
         elif self.path == '/api/current-user':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({"username": self._get_username()}).encode())
+            self._safe_write(json.dumps({"username": self._get_username()}).encode())
 
         else:
             self.send_response(404)
@@ -4367,12 +4442,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 secure_flag = "; Secure" if os.environ.get("RENDER") else ""
                 self.send_header('Set-Cookie', f'session={token}; Path=/; Max-Age={SESSION_TTL}; HttpOnly; SameSite=Strict{secure_flag}')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": True}).encode())
+                self._safe_write(json.dumps({"ok": True}).encode())
             else:
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": "Invalid username or password"}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": "Invalid username or password"}).encode())
             return
 
         # All other POST routes require auth
@@ -4388,7 +4463,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                self._safe_write(json.dumps({"error": "Invalid JSON"}).encode())
                 return
 
             ticket_id = data.get("ticket_id")
@@ -4398,7 +4473,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "ticket_id and tracking required"}).encode())
+                self._safe_write(json.dumps({"error": "ticket_id and tracking required"}).encode())
                 return
 
             # Post as internal note on the Gorgias ticket
@@ -4416,11 +4491,11 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
             if "error" in result:
-                self.wfile.write(json.dumps({"ok": False, "error": result["error"]}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": result["error"]}).encode())
             else:
                 # Invalidate cache so next load picks up the new note
                 _cache["timestamp"] = 0
-                self.wfile.write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
+                self._safe_write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
         elif self.path == '/api/add-internal-note':
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)
@@ -4430,7 +4505,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                self._safe_write(json.dumps({"error": "Invalid JSON"}).encode())
                 return
 
             ticket_id = str(data.get("ticket_id", "")).strip()
@@ -4440,7 +4515,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "ticket_id and note required"}).encode())
+                self._safe_write(json.dumps({"error": "ticket_id and note required"}).encode())
                 return
 
             # Post as internal note on the Gorgias ticket
@@ -4460,11 +4535,11 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
             if "error" in result:
-                self.wfile.write(json.dumps({"ok": False, "error": result["error"]}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": result["error"]}).encode())
             else:
                 _cache["timestamp"] = 0
                 _add_activity(self._get_username(), "Posted internal note", f"Ticket {ticket_id}")
-                self.wfile.write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
+                self._safe_write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
 
         elif self.path == '/api/upload-image-note':
             content_length = int(self.headers.get('Content-Length', 0))
@@ -4475,7 +4550,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                self._safe_write(json.dumps({"error": "Invalid JSON"}).encode())
                 return
 
             ticket_id = str(data.get("ticket_id", "")).strip()
@@ -4486,7 +4561,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "ticket_id and image_data required"}).encode())
+                self._safe_write(json.dumps({"error": "ticket_id and image_data required"}).encode())
                 return
 
             # Post image as internal note with embedded base64 image
@@ -4506,11 +4581,11 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
             if "error" in result:
-                self.wfile.write(json.dumps({"ok": False, "error": result["error"]}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": result["error"]}).encode())
             else:
                 _cache["timestamp"] = 0
                 _add_activity(self._get_username(), "Uploaded image", f"Ticket {ticket_id} - {filename}")
-                self.wfile.write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
+                self._safe_write(json.dumps({"ok": True, "message_id": result.get("id")}).encode())
 
         elif self.path == '/api/set-return-stage':
             content_length = int(self.headers.get('Content-Length', 0))
@@ -4521,7 +4596,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                self._safe_write(json.dumps({"error": "Invalid JSON"}).encode())
                 return
 
             ticket_id = str(data.get("ticket_id", "")).strip()
@@ -4531,7 +4606,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": "Invalid ticket ID or stage"}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": "Invalid ticket ID or stage"}).encode())
                 return
 
             # Fetch current ticket tags
@@ -4540,7 +4615,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket.get('error', '')}"}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket.get('error', '')}"}).encode())
                 return
 
             current_tags = ticket.get("tags") or []
@@ -4589,18 +4664,18 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 stage_label = RETURN_TIMELINE_STAGES[stage_index]["label"]
                 _add_activity(self._get_username(), "Changed return progress", f"Set ticket {ticket_id} to '{stage_label}'")
-                self.wfile.write(json.dumps({"ok": True, "message": f"Return progress set to {stage_label}"}).encode())
+                self._safe_write(json.dumps({"ok": True, "message": f"Return progress set to {stage_label}"}).encode())
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode() if e.fp else ""
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": f"Failed: HTTP {e.code} {err_body[:200]}"}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": f"Failed: HTTP {e.code} {err_body[:200]}"}).encode())
             except Exception as e:
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": str(e)}).encode())
 
         elif self.path == '/api/add-ticket':
             content_length = int(self.headers.get('Content-Length', 0))
@@ -4611,7 +4686,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                self._safe_write(json.dumps({"error": "Invalid JSON"}).encode())
                 return
 
             ticket_id = str(data.get("ticket_id", "")).strip().lstrip("#")
@@ -4619,7 +4694,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Valid ticket ID required"}).encode())
+                self._safe_write(json.dumps({"error": "Valid ticket ID required"}).encode())
                 return
 
             # First check ticket exists
@@ -4628,7 +4703,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket['error']}"}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket['error']}"}).encode())
                 return
 
             # Get current tags and add 'UK Return' if not already present
@@ -4641,7 +4716,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": True, "message": "Ticket already has UK Return tag"}).encode())
+                self._safe_write(json.dumps({"ok": True, "message": "Ticket already has UK Return tag"}).encode())
                 return
 
             # Add the UK Return tag via PATCH
@@ -4668,18 +4743,18 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 _add_activity(self._get_username(), "Added ticket", f"Ticket {ticket_id} tagged with UK Return")
-                self.wfile.write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} tagged with UK Return"}).encode())
+                self._safe_write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} tagged with UK Return"}).encode())
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode() if e.fp else ""
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": f"Failed to tag: HTTP {e.code} {err_body[:200]}"}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": f"Failed to tag: HTTP {e.code} {err_body[:200]}"}).encode())
             except Exception as e:
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": str(e)}).encode())
 
         elif self.path == '/api/remove-ticket':
             content_length = int(self.headers.get('Content-Length', 0))
@@ -4690,7 +4765,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                self._safe_write(json.dumps({"error": "Invalid JSON"}).encode())
                 return
 
             ticket_id = str(data.get("ticket_id", "")).strip().lstrip("#")
@@ -4698,7 +4773,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Valid ticket ID required"}).encode())
+                self._safe_write(json.dumps({"error": "Valid ticket ID required"}).encode())
                 return
 
             # Fetch ticket to get current tags
@@ -4707,7 +4782,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket['error']}"}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket['error']}"}).encode())
                 return
 
             current_tags = ticket.get("tags") or []
@@ -4732,18 +4807,18 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 _add_activity(self._get_username(), "Removed ticket", f"Ticket {ticket_id} removed from UK Returns")
-                self.wfile.write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} removed from UK Returns"}).encode())
+                self._safe_write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} removed from UK Returns"}).encode())
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode() if e.fp else ""
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": f"Failed to remove tag: HTTP {e.code} {err_body[:200]}"}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": f"Failed to remove tag: HTTP {e.code} {err_body[:200]}"}).encode())
             except Exception as e:
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": str(e)}).encode())
 
         elif self.path == '/api/add-warranty-ticket':
             content_length = int(self.headers.get('Content-Length', 0))
@@ -4754,7 +4829,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                self._safe_write(json.dumps({"error": "Invalid JSON"}).encode())
                 return
 
             ticket_id = str(data.get("ticket_id", "")).strip().lstrip("#")
@@ -4762,7 +4837,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Valid ticket ID required"}).encode())
+                self._safe_write(json.dumps({"error": "Valid ticket ID required"}).encode())
                 return
 
             ticket = gorgias_request(f"tickets/{ticket_id}")
@@ -4770,7 +4845,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket['error']}"}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket['error']}"}).encode())
                 return
 
             current_tags = ticket.get("tags") or []
@@ -4781,7 +4856,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": True, "message": "Ticket already has UK Warranty tag"}).encode())
+                self._safe_write(json.dumps({"ok": True, "message": "Ticket already has UK Warranty tag"}).encode())
                 return
 
             new_tags = [{"name": t.get("name", "")} for t in current_tags if isinstance(t, dict)]
@@ -4804,18 +4879,18 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 _add_activity(self._get_username(), "Added warranty ticket", f"Ticket {ticket_id} tagged with UK Warranty")
-                self.wfile.write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} tagged with UK Warranty"}).encode())
+                self._safe_write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} tagged with UK Warranty"}).encode())
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode() if e.fp else ""
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": f"Failed to tag: HTTP {e.code} {err_body[:200]}"}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": f"Failed to tag: HTTP {e.code} {err_body[:200]}"}).encode())
             except Exception as e:
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": str(e)}).encode())
 
         elif self.path == '/api/remove-warranty-ticket':
             content_length = int(self.headers.get('Content-Length', 0))
@@ -4826,7 +4901,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                self._safe_write(json.dumps({"error": "Invalid JSON"}).encode())
                 return
 
             ticket_id = str(data.get("ticket_id", "")).strip().lstrip("#")
@@ -4834,7 +4909,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Valid ticket ID required"}).encode())
+                self._safe_write(json.dumps({"error": "Valid ticket ID required"}).encode())
                 return
 
             ticket = gorgias_request(f"tickets/{ticket_id}")
@@ -4842,7 +4917,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket['error']}"}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": f"Ticket not found: {ticket['error']}"}).encode())
                 return
 
             current_tags = ticket.get("tags") or []
@@ -4865,18 +4940,18 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 _add_activity(self._get_username(), "Removed warranty ticket", f"Ticket {ticket_id} removed from UK Warranties")
-                self.wfile.write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} removed from UK Warranties"}).encode())
+                self._safe_write(json.dumps({"ok": True, "message": f"Ticket #{ticket_id} removed from UK Warranties"}).encode())
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode() if e.fp else ""
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": f"Failed to remove tag: HTTP {e.code} {err_body[:200]}"}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": f"Failed to remove tag: HTTP {e.code} {err_body[:200]}"}).encode())
             except Exception as e:
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+                self._safe_write(json.dumps({"ok": False, "error": str(e)}).encode())
 
         elif self.path == '/api/stock':
             content_length = int(self.headers.get('Content-Length', 0))
@@ -4887,7 +4962,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                self._safe_write(json.dumps({"error": "Invalid JSON"}).encode())
                 return
 
             action = data.get("action", "")
@@ -4898,7 +4973,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/json')
                     self.end_headers()
-                    self.wfile.write(json.dumps({"ok": False, "error": "SKU required"}).encode())
+                    self._safe_write(json.dumps({"ok": False, "error": "SKU required"}).encode())
                     return
                 result = supabase_request("stock_items", method="POST", data=item)
                 if result is None:
@@ -4936,7 +5011,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": True, "stock": _load_stock()}).encode())
+            self._safe_write(json.dumps({"ok": True, "stock": _load_stock()}).encode())
 
         elif self.path == '/api/track-status':
             content_length = int(self.headers.get('Content-Length', 0))
@@ -4947,7 +5022,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+                self._safe_write(json.dumps({"error": "Invalid JSON"}).encode())
                 return
 
             tracking_number = data.get("tracking", "").strip()
@@ -4955,7 +5030,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "tracking required"}).encode())
+                self._safe_write(json.dumps({"error": "tracking required"}).encode())
                 return
 
             result = track_shipment(tracking_number)
@@ -4963,7 +5038,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps(result).encode())
+            self._safe_write(json.dumps(result).encode())
         else:
             self.send_response(404)
             self.end_headers()
