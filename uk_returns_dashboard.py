@@ -3896,7 +3896,7 @@ function openDetail(id) {
       ${imagesHtml}
       <div style="margin-top:8px">
         <label style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--accent);color:#fff;border-radius:6px;cursor:pointer;font-size:13px">
-          &#x2b; Upload Image
+          &#x2b; Upload Image Internally in Gorgias
           <input type="file" accept="image/*" onchange="uploadImageNote('${t.id}', this)" style="display:none">
         </label>
         <div id="uploadStatus-${t.id}" style="margin-top:6px;font-size:12px"></div>
@@ -3905,7 +3905,7 @@ function openDetail(id) {
     </div>
 
     <div class="detail-section">
-      <h3>Add Internal Note</h3>
+      <h3>Add Gorgias Internal Note</h3>
       <div id="internalNoteForm-${t.id}">
         <textarea id="noteText-${t.id}" placeholder="Write an internal note..." style="width:100%;min-height:70px;background:var(--card-bg);color:var(--text-main);border:1px solid var(--border);border-radius:6px;padding:8px;font-size:13px;resize:vertical;font-family:inherit"></textarea>
         <button onclick="postInternalNote('${t.id}')" style="margin-top:6px;padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">Post Note</button>
@@ -5003,7 +5003,7 @@ function openWarrantyDetail(id) {
       ${imagesHtml}
       <div style="margin-top:8px">
         <label style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--accent);color:#fff;border-radius:6px;cursor:pointer;font-size:13px">
-          &#x2b; Upload Image
+          &#x2b; Upload Image Internally in Gorgias
           <input type="file" accept="image/*" onchange="uploadImageNote('${t.id}', this)" style="display:none">
         </label>
         <div id="uploadStatus-${t.id}" style="margin-top:6px;font-size:12px"></div>
@@ -5012,7 +5012,7 @@ function openWarrantyDetail(id) {
     </div>
 
     <div class="detail-section">
-      <h3>Add Internal Note</h3>
+      <h3>Add Gorgias Internal Note</h3>
       <div id="internalNoteForm-${t.id}">
         <textarea id="noteText-${t.id}" placeholder="Write an internal note..." style="width:100%;min-height:70px;background:var(--card-bg);color:var(--text-main);border:1px solid var(--border);border-radius:6px;padding:8px;font-size:13px;resize:vertical;font-family:inherit"></textarea>
         <button onclick="postInternalNote('${t.id}')" style="margin-top:6px;padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">Post Note</button>
