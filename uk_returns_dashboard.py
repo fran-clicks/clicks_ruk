@@ -2012,6 +2012,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .ana-bar-label { font-size: 9px; color: var(--text-dim); margin-top: 4px; white-space: nowrap; }
   .ana-bar-count { font-size: 10px; color: var(--text); margin-bottom: 2px; }
+  .issue-item { border-bottom: 1px solid var(--border); padding: 10px 0; }
+  .issue-item:last-child { border-bottom: none; }
+  .issue-header { display: flex; align-items: center; gap: 10px; }
+  .issue-ticket { font-size: 11px; font-weight: 600; color: var(--accent); background: rgba(255,107,0,0.1); padding: 2px 8px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }
+  .issue-snippet { font-size: 13px; color: var(--text); flex: 1; }
+  .issue-expand { font-size: 10px; color: var(--text-dim); flex-shrink: 0; transition: transform 0.2s; }
+  .issue-full { font-size: 13px; color: var(--text-dim); margin-top: 8px; padding: 8px 12px; background: var(--bg); border-radius: 6px; line-height: 1.5; margin-left: 52px; }
   .ana-reason-row {
     display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
   }
@@ -2962,8 +2969,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px">
-      <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
-        <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Top Return Issues</h3>
+      <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px;max-height:400px;overflow-y:auto">
+        <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Reported Issues</h3>
         <div id="anaReasons"></div>
       </div>
     </div>
@@ -3001,8 +3008,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:0 32px">
-      <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px">
-        <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Top Reported Issues</h3>
+      <div style="flex:1;min-width:260px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px;max-height:400px;overflow-y:auto">
+        <h3 style="margin:0 0 12px;font-size:14px;color:var(--text)">Reported Issues</h3>
         <div id="anaWarIssues"></div>
       </div>
     </div>
@@ -4346,6 +4353,35 @@ function buildTimeChart(tickets, period, elId) {
   }).join('') || '<div style="color:var(--text-dim);font-size:13px;padding:20px">No data</div>';
 }
 
+function buildIssuesList(issues, elId, emptyMsg) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (!issues.length) { el.innerHTML = '<div style="color:var(--text-dim);font-size:13px">' + emptyMsg + '</div>'; return; }
+  el.innerHTML = issues.map((item, idx) => {
+    const snippet = item.text.length > 80 ? item.text.slice(0, 77) + '...' : item.text;
+    const hasMore = item.text.length > 80;
+    return '<div class="issue-item" id="issue-' + elId + '-' + idx + '">' +
+      '<div class="issue-header" ' + (hasMore ? 'onclick="toggleIssue(\'' + elId + '-' + idx + '\')" style="cursor:pointer"' : '') + '>' +
+        '<span class="issue-ticket">#' + item.ticketId + '</span>' +
+        '<span class="issue-snippet">' + esc(snippet) + '</span>' +
+        (hasMore ? '<span class="issue-expand">&#9660;</span>' : '') +
+      '</div>' +
+      (hasMore ? '<div class="issue-full" style="display:none">' + esc(item.text) + '</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function toggleIssue(id) {
+  const el = document.getElementById('issue-' + id);
+  if (!el) return;
+  const full = el.querySelector('.issue-full');
+  const arrow = el.querySelector('.issue-expand');
+  if (!full) return;
+  const open = full.style.display !== 'none';
+  full.style.display = open ? 'none' : 'block';
+  if (arrow) arrow.innerHTML = open ? '&#9660;' : '&#9650;';
+}
+
 function buildBarChart(map, elId, color, emptyMsg) {
   const entries = Object.entries(map).sort((a,b) => b[1] - a[1]).slice(0, 8);
   const max = entries.length ? entries[0][1] : 1;
@@ -4362,7 +4398,7 @@ function buildBarChart(map, elId, color, emptyMsg) {
 function renderReturnsAnalytics() {
   if (!allTickets.length) return;
   let totalValue = 0, valueCount = 0, initiatedCount = 0, processedCount = 0;
-  let refundDays = [], issueMap = {}, stageMap = {}, processMap = {Open: 0, Closed: 0, Expired: 0};
+  let refundDays = [], issueList = [], stageMap = {}, processMap = {Open: 0, Closed: 0, Expired: 0};
   const stages = ['Initiated','Sent','Received','Inspected','Processed'];
   stages.forEach(s => stageMap[s] = 0);
 
@@ -4378,7 +4414,7 @@ function renderReturnsAnalytics() {
       const days = Math.round((new Date() - new Date(t.created)) / 86400000);
       if (days >= 0 && days < 365) refundDays.push(days);
     }
-    // Deduplicate issues per ticket
+    // Deduplicate issues per ticket, collect with ticket ID
     const rawIssues = (t.issues || []).map(i => i.trim().toLowerCase().replace(/\s+/g,' '));
     const seen = new Set();
     rawIssues.sort((a,b) => a.length - b.length);
@@ -4386,7 +4422,7 @@ function renderReturnsAnalytics() {
       const short = issue.slice(0, 50);
       let isDup = false;
       for (const s of seen) { if (s.includes(short) || short.includes(s)) { isDup = true; break; } }
-      if (!isDup) { seen.add(short); const capped = issue.length > 40 ? issue.slice(0, 37) + '...' : issue; issueMap[capped] = (issueMap[capped] || 0) + 1; }
+      if (!isDup) { seen.add(short); issueList.push({text: issue, ticketId: t.id}); }
     }
     const ps = getProcessLabel(t, 'uk return');
     if (ps === 'Open') processMap.Open++;
@@ -4405,7 +4441,7 @@ function renderReturnsAnalytics() {
   document.getElementById('anaProcessRate').textContent = processRate;
 
   buildTimeChart(allTickets, anaPeriod, 'anaChart');
-  buildBarChart(issueMap, 'anaReasons', 'var(--accent)', 'No return issues detected');
+  buildIssuesList(issueList, 'anaReasons', 'No return issues detected');
 
   const stageColors = ['#ff6b00','#ff8533','#f59e0b','#ef4444','#22c55e'];
   const maxStage = Math.max(...Object.values(stageMap), 1);
@@ -4429,7 +4465,7 @@ function renderWarrantyAnalytics() {
     ['anaWarTotal','anaWarOpen','anaWarAvgDays','anaWarProcessed'].forEach(id => { const el = document.getElementById(id); if(el) el.textContent = '-'; });
     return;
   }
-  let openCount = 0, processedCount = 0, issueMap = {}, stageMap = {}, productMap = {}, daysOpen = [];
+  let openCount = 0, processedCount = 0, issueList = [], stageMap = {}, productMap = {}, daysOpen = [];
   const stages = ['Initiated','Sent','Received','Inspected','Processed'];
   stages.forEach(s => stageMap[s] = 0);
 
@@ -4441,21 +4477,16 @@ function renderWarrantyAnalytics() {
       const days = Math.round((new Date() - new Date(t.created)) / 86400000);
       if (days >= 0 && days < 365) daysOpen.push(days);
     }
-    // Deduplicate issues per ticket: normalize, take shortest unique
+    // Deduplicate issues per ticket, collect with ticket ID
     const rawIssues = (t.issues || []).map(i => i.trim().toLowerCase().replace(/\s+/g,' '));
     const seen = new Set();
-    const uniqueIssues = [];
     rawIssues.sort((a,b) => a.length - b.length);
     for (const issue of rawIssues) {
       const short = issue.slice(0, 50);
       let isDup = false;
       for (const s of seen) { if (s.includes(short) || short.includes(s)) { isDup = true; break; } }
-      if (!isDup) { seen.add(short); uniqueIssues.push(issue); }
+      if (!isDup) { seen.add(short); issueList.push({text: issue, ticketId: t.id}); }
     }
-    uniqueIssues.forEach(i => {
-      const capped = i.length > 40 ? i.slice(0, 37) + '...' : i;
-      issueMap[capped] = (issueMap[capped] || 0) + 1;
-    });
     const tl = t.timeline || [];
     const cs = [...tl].reverse().find(s => s.done);
     if (cs) stageMap[cs.label] = (stageMap[cs.label] || 0) + 1;
@@ -4471,7 +4502,7 @@ function renderWarrantyAnalytics() {
   document.getElementById('anaWarProcessed').textContent = processedCount;
 
   buildTimeChart(warrantyTickets, warPeriod, 'anaWarChart');
-  buildBarChart(issueMap, 'anaWarIssues', '#f59e0b', 'No issues recorded');
+  buildIssuesList(issueList, 'anaWarIssues', 'No issues recorded');
   buildBarChart(productMap, 'anaWarProducts', '#74b9ff', 'No product data');
 
   const stageColors = ['#ff6b00','#ff8533','#f59e0b','#ef4444','#22c55e'];
