@@ -340,44 +340,45 @@ def _create_session(username=""):
     from datetime import timedelta
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=SESSION_TTL)).isoformat()
 
-    result = supabase_request("sessions", method="POST", data={
+    # Always store in memory for fast validation
+    _sessions[token] = {"expires": time.time() + SESSION_TTL, "username": username}
+    # Also persist to Supabase for cross-restart survival
+    supabase_request("sessions", method="POST", data={
         "token": token,
         "username": username,
         "expires_at": expires_at
     })
-    if result is None:
-        _sessions[token] = {"expires": time.time() + SESSION_TTL, "username": username}
     return token
 
 
 def _validate_session(token):
     if not token:
         return False
-    # Try Supabase first
+    # Check memory first (fast, no network)
+    if token in _sessions:
+        if time.time() <= _sessions[token]["expires"]:
+            return True
+        del _sessions[token]
+        return False
+    # Fallback to Supabase (e.g. after server restart)
     result = supabase_request("sessions", params={
-        "select": "expires_at",
+        "select": "expires_at,username",
         "token": f"eq.{token}",
         "limit": "1"
     })
-    if result is not None:
-        if not result:
-            return False
+    if result and len(result) > 0:
         expires_at = result[0].get("expires_at", "")
         try:
             exp_time = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
             if exp_time < datetime.now(timezone.utc):
                 supabase_request("sessions", method="DELETE", params={"token": f"eq.{token}"})
                 return False
+            # Cache in memory so subsequent calls are instant
+            _sessions[token] = {"expires": exp_time.timestamp(), "username": result[0].get("username", "Unknown")}
             return True
         except:
             return False
-    # Memory fallback
-    if token not in _sessions:
-        return False
-    if time.time() > _sessions[token]["expires"]:
-        del _sessions[token]
-        return False
-    return True
+    return False
 
 
 def _get_session_username(token):
