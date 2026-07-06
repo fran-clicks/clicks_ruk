@@ -1553,9 +1553,14 @@ TRACKING_PATTERNS = [
 ]
 
 ISSUE_PATTERNS = [
-    r'(?:issue|problem|fault|defect|broken|damaged|not\s*working|stopped\s*working|cracked|scratched|malfunction)[:\s]+([^\n\.]{5,100})',
-    r'((?:screen|button|battery|charging|bluetooth|connectivity|keys?|typing|hinge|speaker|microphone|camera)[^\n\.]{0,40}(?:issue|problem|broken|not\s*work|fault|defect|stuck|loose|cracked))',
-    r'((?:won\'?t|doesn\'?t|can\'?t|cannot|will\s*not|does\s*not)\s+(?:charge|connect|pair|turn\s*on|work|type|respond)[^\n\.]{0,60})',
+    # Specific hardware/product issues
+    r'((?:screen|display|button|battery|charging|bluetooth|connectivity|keys?|keyboard|typing|hinge|speaker|microphone|camera|case|cover|port|usb|magnetic|magnet|stand|kickstand|folio)\s+(?:is\s+|was\s+)?(?:broken|cracked|scratched|loose|stuck|peeling|not\s*work|stopped|faulty|defective|damaged|missing|bent|warped|chipped)(?:[^\n\.]{0,40}))',
+    # "won't/doesn't/can't" + action
+    r'((?:won\'?t|doesn\'?t|can\'?t|cannot|will\s*not|does\s*not)\s+(?:charge|connect|pair|turn\s*on|turn\s*off|work|type|respond|attach|fit|close|open|snap|stick|hold)[^\n\.]{0,40})',
+    # "issue/problem with" + specific thing
+    r'(?:issue|problem|fault|defect)\s+(?:with|on)\s+((?:the\s+)?(?:screen|display|button|battery|charging|bluetooth|keyboard|keys?|hinge|speaker|case|cover|stand|magnet|port)[^\n\.]{0,40})',
+    # Direct damage descriptions
+    r'((?:crack|scratch|dent|chip|peel|warp|bend|break|snap)\w*\s+(?:on|in|at|near)\s+(?:the\s+)?[^\n\.]{3,40})',
 ]
 
 
@@ -1639,10 +1644,14 @@ def enrich_with_messages(ticket_summary):
                 matches = re.findall(p, body_clean, re.IGNORECASE)
                 device_info.update(m.strip() for m in matches if len(m.strip()) > 2)
 
-            # Find issue descriptions
-            for p in ISSUE_PATTERNS:
-                matches = re.findall(p, body_clean, re.IGNORECASE)
-                issues_found.update(m.strip() for m in matches if len(m.strip()) > 4)
+            # Find issue descriptions (only from customer messages, not agent replies)
+            sender_type = msg.get("sender", {}).get("type", "") if isinstance(msg.get("sender"), dict) else ""
+            source_type = msg.get("source", {}).get("type", "") if isinstance(msg.get("source"), dict) else ""
+            is_customer_msg = sender_type == "customer" or source_type in ("email", "contact-form", "chat")
+            if is_customer_msg or msg.get("channel", "") not in ("internal-note",):
+                for p in ISSUE_PATTERNS:
+                    matches = re.findall(p, body_clean, re.IGNORECASE)
+                    issues_found.update(m.strip() for m in matches if len(m.strip()) > 4)
 
             # Find order numbers (CT prefix)
             order_numbers.update(re.findall(ORDER_PATTERN, body_clean, re.IGNORECASE))
@@ -2006,10 +2015,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .ana-reason-row {
     display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
   }
-  .ana-reason-bar { flex: 1; height: 22px; background: var(--border); border-radius: 4px; overflow: hidden; position: relative; }
-  .ana-reason-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width 0.3s; }
-  .ana-reason-label { font-size: 12px; color: var(--text); min-width: 100px; }
-  .ana-reason-count { font-size: 12px; color: var(--text-dim); min-width: 30px; text-align: right; }
+  .ana-reason-bar { flex: 1; height: 22px; background: var(--border); border-radius: 4px; overflow: hidden; position: relative; min-width: 60px; }
+  .ana-reason-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width 0.3s; min-width: 8px; }
+  .ana-reason-label { font-size: 12px; color: var(--text); max-width: 220px; min-width: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+  .ana-reason-count { font-size: 12px; color: var(--text-dim); min-width: 30px; text-align: right; flex-shrink: 0; }
   .ana-stage-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
   .ana-stage-label { font-size: 13px; color: var(--text); min-width: 90px; }
   .ana-stage-bar { flex: 1; height: 20px; background: var(--border); border-radius: 4px; overflow: hidden; }
@@ -4342,11 +4351,12 @@ function buildBarChart(map, elId, color, emptyMsg) {
   const max = entries.length ? entries[0][1] : 1;
   const el = document.getElementById(elId);
   if (!el) return;
-  el.innerHTML = entries.length ? entries.map(([label, count]) =>
-    '<div class="ana-reason-row"><span class="ana-reason-label">' + esc(label) + '</span>' +
+  el.innerHTML = entries.length ? entries.map(([label, count]) => {
+    const short = label.length > 35 ? label.slice(0, 32) + '...' : label;
+    return '<div class="ana-reason-row"><span class="ana-reason-label" title="' + esc(label) + '">' + esc(short) + '</span>' +
     '<div class="ana-reason-bar"><div class="ana-reason-fill" style="width:' + (count/max*100) + '%;background:' + (color||'var(--accent)') + '"></div></div>' +
-    '<span class="ana-reason-count">' + count + '</span></div>'
-  ).join('') : '<div style="color:var(--text-dim);font-size:13px">' + emptyMsg + '</div>';
+    '<span class="ana-reason-count">' + count + '</span></div>';
+  }).join('') : '<div style="color:var(--text-dim);font-size:13px">' + emptyMsg + '</div>';
 }
 
 function renderReturnsAnalytics() {
@@ -4376,7 +4386,7 @@ function renderReturnsAnalytics() {
       const short = issue.slice(0, 50);
       let isDup = false;
       for (const s of seen) { if (s.includes(short) || short.includes(s)) { isDup = true; break; } }
-      if (!isDup) { seen.add(short); const capped = issue.length > 60 ? issue.slice(0, 57) + '...' : issue; issueMap[capped] = (issueMap[capped] || 0) + 1; }
+      if (!isDup) { seen.add(short); const capped = issue.length > 40 ? issue.slice(0, 37) + '...' : issue; issueMap[capped] = (issueMap[capped] || 0) + 1; }
     }
     const ps = getProcessLabel(t, 'uk return');
     if (ps === 'Open') processMap.Open++;
@@ -4443,7 +4453,7 @@ function renderWarrantyAnalytics() {
       if (!isDup) { seen.add(short); uniqueIssues.push(issue); }
     }
     uniqueIssues.forEach(i => {
-      const capped = i.length > 60 ? i.slice(0, 57) + '...' : i;
+      const capped = i.length > 40 ? i.slice(0, 37) + '...' : i;
       issueMap[capped] = (issueMap[capped] || 0) + 1;
     });
     const tl = t.timeline || [];
