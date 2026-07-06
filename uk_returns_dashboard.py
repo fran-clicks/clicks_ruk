@@ -3990,15 +3990,18 @@ async function setReturnStage(ticketId, stageIndex, stageKey, stageLabel) {
     if (resp.status === 401) { window.location.href = '/login'; return; }
     const data = await resp.json();
     if (data.ok) {
-      // Update timeline locally for instant feedback
+      // Update timeline and tags locally for instant feedback
       const ticket = allTickets.find(x => x.id === ticketId);
-      if (ticket && ticket.timeline) {
-        ticket.timeline.forEach((s, i) => { s.done = i <= stageIndex; });
-        filterTickets();  // re-render list with updated timeline
-        openDetail(ticketId);  // re-render detail panel
+      if (ticket) {
+        if (ticket.timeline) ticket.timeline.forEach((s, i) => { s.done = i <= stageIndex; });
+        // Update tags locally so process status updates instantly
+        const stageTags = ['Return Initiated','Return Sent','Return Received','Return Inspected','Return Processed'];
+        const newTags = (ticket.tags || []).filter(t => !stageTags.some(st => st.toLowerCase() === t.toLowerCase()));
+        for (let i = 0; i <= stageIndex; i++) newTags.push(stageTags[i]);
+        ticket.tags = newTags;
+        filterTickets();
+        openDetail(ticketId);
       }
-      // Also trigger background refresh for full data sync
-      loadTickets();
     } else {
       alert('Error: ' + (data.error || 'Unknown'));
     }
@@ -4518,24 +4521,17 @@ function printWarrantyLabel(ticketId) {
   const t = warrantyTickets.find(x => x.id === ticketId);
   if (!t) return;
   const ref = generateWarrantyRef(t);
-  const cf = t.custom_fields || {};
-  const model = cf['Model'] || cf['model'] || '';
-  const colour = cf['Colour'] || cf['colour'] || cf['Color'] || cf['color'] || '';
-  const product = [model, colour].filter(Boolean).join(' - ') || (t.device_info||[]).join(', ') || '-';
-  const w = window.open('', '_blank', 'width=400,height=300');
+  const dateStr = t.created ? new Date(t.created).toLocaleDateString('en-GB') : '';
+  const w = window.open('', '_blank', 'width=400,height=250');
   w.document.write(`<!DOCTYPE html><html><head><title>Label ${ref}</title>
 <style>
   @media print { @page { margin: 5mm; size: 62mm 29mm; } body { margin: 0; } }
   body { font-family: Arial, sans-serif; padding: 8px; }
-  .ref { font-size: 22px; font-weight: 800; letter-spacing: 1px; margin-bottom: 4px; }
-  .product { font-size: 11px; color: #555; margin-bottom: 2px; }
-  .customer { font-size: 10px; color: #777; }
-  .date { font-size: 10px; color: #999; }
+  .ref { font-size: 24px; font-weight: 800; letter-spacing: 1px; margin-bottom: 6px; }
+  .info { font-size: 11px; color: #555; }
 </style></head><body>
   <div class="ref">${ref}</div>
-  <div class="product">${esc(product)}</div>
-  <div class="customer">${esc(t.customer_name||'')}</div>
-  <div class="date">${t.created ? new Date(t.created).toLocaleDateString('en-GB') : ''} | Ticket #${t.id}</div>
+  <div class="info">${dateStr} &nbsp;|&nbsp; Ticket #${t.id}</div>
   <script>window.onload=()=>{window.print();}<\/script>
 </body></html>`);
   w.document.close();
@@ -4883,12 +4879,15 @@ async function setWarrantyReturnStage(ticketId, stageIndex, stageKey, stageLabel
     const data = await resp.json();
     if (data.ok) {
       const ticket = warrantyTickets.find(x => x.id === ticketId);
-      if (ticket && ticket.timeline) {
-        ticket.timeline.forEach((s, i) => { s.done = i <= stageIndex; });
+      if (ticket) {
+        if (ticket.timeline) ticket.timeline.forEach((s, i) => { s.done = i <= stageIndex; });
+        const stageTags = ['Return Initiated','Return Sent','Return Received','Return Inspected','Return Processed'];
+        const newTags = (ticket.tags || []).filter(t => !stageTags.some(st => st.toLowerCase() === t.toLowerCase()));
+        for (let i = 0; i <= stageIndex; i++) newTags.push(stageTags[i]);
+        ticket.tags = newTags;
         filterWarrantyTickets();
         openWarrantyDetail(ticketId);
       }
-      loadWarrantyTickets();
     } else {
       alert('Error: ' + (data.error || 'Unknown'));
     }
