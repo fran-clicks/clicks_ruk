@@ -2134,7 +2134,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     cursor: pointer;
     transition: all 0.15s;
     display: grid;
-    grid-template-columns: 80px 1fr 120px 160px 100px 100px 160px 120px 100px;
+    grid-template-columns: 80px 1fr 120px 160px 100px 100px 160px 120px 100px 100px;
     align-items: center;
     gap: 16px;
   }
@@ -2175,6 +2175,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .status-open { background: rgba(116,185,255,0.15); color: var(--blue); }
   .status-closed { background: rgba(34,197,94,0.15); color: var(--green); }
   .status-snoozed { background: rgba(245,158,11,0.15); color: var(--yellow); }
+  .process-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .process-open { background: rgba(255,107,0,0.15); color: var(--accent); }
+  .process-closed { background: rgba(34,197,94,0.15); color: var(--green); }
+  .process-unknown { background: rgba(136,136,136,0.15); color: var(--text-dim); }
   .order-num { font-family: monospace; font-weight: 600; color: var(--accent-light); }
   .add-tracking-row {
     display: flex;
@@ -2564,7 +2576,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       grid-template-columns: 70px 1fr 100px;
     }
     .ticket-customer, .ticket-date, .ticket-assignee, .ticket-product, .timeline-compact { display: none; }
-    .col-headers div:nth-child(n+4):nth-child(-n+8) { display: none; }
+    .col-headers div:nth-child(n+4):nth-child(-n+9) { display: none; }
     .detail-panel { width: 100%; }
   }
 </style>
@@ -2629,7 +2641,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div>Loading UK return tickets from Gorgias...</div>
   </div>
   <div id="colHeaders" class="ticket-row col-headers" style="display:none">
-    <div>ID</div><div>Subject</div><div>Order</div><div>Product</div><div>Progress</div><div>Purchased</div><div>Customer</div><div>Updated</div><div>Status</div>
+    <div>ID</div><div>Subject</div><div>Order</div><div>Product</div><div>Progress</div><div>Purchased</div><div>Customer</div><div>Updated</div><div>Ticket Status</div><div>Process</div>
   </div>
   <div id="ticketList" class="ticket-list" style="display:none"></div>
   <div id="emptyState" class="empty-state" style="display:none">
@@ -2764,7 +2776,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div>Loading UK warranty tickets from Gorgias...</div>
   </div>
   <div id="wColHeaders" class="ticket-row col-headers" style="display:none">
-    <div>ID</div><div>Subject</div><div>Order</div><div>Product</div><div>Progress</div><div>Purchased</div><div>Customer</div><div>Updated</div><div>Status</div>
+    <div>ID</div><div>Subject</div><div>Order</div><div>Product</div><div>Progress</div><div>Purchased</div><div>Customer</div><div>Updated</div><div>Ticket Status</div><div>Process</div>
   </div>
   <div id="wTicketList" class="ticket-list" style="display:none"></div>
   <div id="wEmptyState" class="empty-state" style="display:none">
@@ -3063,7 +3075,7 @@ function filterTickets() {
 
   let filtered = allTickets;
 
-  // Visibility filter
+  // Process status filter
   if (currentFilter === 'open') {
     // Open = has UK Return tag but NOT processed
     filtered = filtered.filter(t => {
@@ -3134,8 +3146,23 @@ function filterTickets() {
       <div class="ticket-customer">${esc(t.customer_name)}</div>
       <div class="ticket-date">${formatDate(t.updated)}</div>
       <div><span class="status-badge status-${t.status}">${t.status}</span></div>
+      <div><span class="process-badge ${getProcessStatus(t, 'uk return')}">${getProcessLabel(t, 'uk return')}</span></div>
     </div>
   `).join('');
+}
+
+function getProcessStatus(t, tagFilter) {
+  const tags = (t.tags || []).map(tag => tag.toLowerCase());
+  if (tags.includes('return processed')) return 'process-closed';
+  if (tags.includes(tagFilter)) return 'process-open';
+  return 'process-unknown';
+}
+
+function getProcessLabel(t, tagFilter) {
+  const tags = (t.tags || []).map(tag => tag.toLowerCase());
+  if (tags.includes('return processed')) return 'Closed';
+  if (tags.includes(tagFilter)) return 'Open';
+  return '-';
 }
 
 function openDetail(id) {
@@ -3982,6 +4009,7 @@ function filterWarrantyTickets() {
       <div class="ticket-customer">${esc(t.customer_name)}</div>
       <div class="ticket-date">${formatDate(t.updated)}</div>
       <div><span class="status-badge status-${t.status}">${t.status}</span></div>
+      <div><span class="process-badge ${getProcessStatus(t, 'uk warranty')}">${getProcessLabel(t, 'uk warranty')}</span></div>
     </div>
   `).join('');
 }
