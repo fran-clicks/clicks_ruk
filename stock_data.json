@@ -1,36 +1,308 @@
 [
-  {"sku": "CK-4100", "description": "14 Pro - BumbleBee", "brand_new": 5, "non_pristine": 13, "damaged": 0, "founders": 0},
-  {"sku": "CK-4101", "description": "14 Pro - London Sky", "brand_new": 1, "non_pristine": 20, "damaged": 0, "founders": 0},
-  {"sku": "CK-4200", "description": "14 Pro Max - BumbleBee", "brand_new": 13, "non_pristine": 2, "damaged": 0, "founders": 0},
-  {"sku": "CK-4201", "description": "14 Pro Max - London Sky", "brand_new": 5, "non_pristine": 2, "damaged": 0, "founders": 0},
-  {"sku": "CK-5000-2", "description": "15 - Royal Ink", "brand_new": 15, "non_pristine": 36, "damaged": 0, "founders": 0},
-  {"sku": "CK-5000-3", "description": "15 - Miami Beach", "brand_new": 11, "non_pristine": 1, "damaged": 0, "founders": 0},
-  {"sku": "CK-5100-0", "description": "15 Pro - BumbleBee", "brand_new": 16, "non_pristine": 3, "damaged": 0, "founders": 0},
-  {"sku": "CK-5100-1", "description": "15 Pro - London Sky", "brand_new": 43, "non_pristine": 72, "damaged": 0, "founders": 112},
-  {"sku": "CK-5100-2", "description": "15 Pro - Royal Ink", "brand_new": 22, "non_pristine": 39, "damaged": 0, "founders": 0},
-  {"sku": "CK-5100-3", "description": "15 Pro - Miami Beach", "brand_new": 10, "non_pristine": 2, "damaged": 0, "founders": 0},
-  {"sku": "CK-5400-2", "description": "15 Plus - Royal Ink", "brand_new": 3, "non_pristine": 19, "damaged": 0, "founders": 0},
-  {"sku": "CK-5400-3", "description": "15 Plus - Miami Beach", "brand_new": 22, "non_pristine": 9, "damaged": 0, "founders": 0},
-  {"sku": "CK-5200-0", "description": "15 Pro Max - BumbleBee", "brand_new": 5, "non_pristine": 36, "damaged": 0, "founders": 0},
-  {"sku": "CK-5200-1", "description": "15 Pro Max - London Sky", "brand_new": 22, "non_pristine": 123, "damaged": 0, "founders": 88},
-  {"sku": "CK-5200-2", "description": "15 Pro Max - Royal Ink", "brand_new": 9, "non_pristine": 36, "damaged": 0, "founders": 0},
-  {"sku": "CK-5200-3", "description": "15 Pro Max - Miami Beach", "brand_new": 54, "non_pristine": 5, "damaged": 0, "founders": 0},
-  {"sku": "CK-5110-1", "description": "15 Pro - London Sky - QWERTZ", "brand_new": 13, "non_pristine": 7, "damaged": 0, "founders": 0},
-  {"sku": "CK-5120-1", "description": "15 Pro - London Sky - AZERTY", "brand_new": 12, "non_pristine": 1, "damaged": 0, "founders": 0},
-  {"sku": "CK-6000-4", "description": "16 - Onyx", "brand_new": 1, "non_pristine": 26, "damaged": 4, "founders": 0},
-  {"sku": "CK-6100-4", "description": "16 Pro - Onyx", "brand_new": 5, "non_pristine": 116, "damaged": 0, "founders": 0},
-  {"sku": "CK-6100-5", "description": "16 Pro - Spice", "brand_new": 0, "non_pristine": 18, "damaged": 0, "founders": 0},
-  {"sku": "CK-6100-6", "description": "16 Pro - Surf", "brand_new": 8, "non_pristine": 10, "damaged": 0, "founders": 0},
-  {"sku": "CK-6200-4", "description": "16 Pro Max - Onyx", "brand_new": 0, "non_pristine": 78, "damaged": 2, "founders": 0},
-  {"sku": "CK-6200-5", "description": "16 Pro Max - Spice", "brand_new": 5, "non_pristine": 32, "damaged": 0, "founders": 0},
-  {"sku": "CK-6200-6", "description": "16 Pro Max - Surf", "brand_new": 11, "non_pristine": 40, "damaged": 0, "founders": 0},
-  {"sku": "CK-6400-4", "description": "16 Plus - Onyx", "brand_new": 11, "non_pristine": 26, "damaged": 0, "founders": 0},
-  {"sku": "CK-7100-4", "description": "17 Pro - Onyx", "brand_new": 2, "non_pristine": 42, "damaged": 0, "founders": 0},
-  {"sku": "CK-7100-1", "description": "17 Pro - Smoke", "brand_new": 2, "non_pristine": 20, "damaged": 0, "founders": 0},
-  {"sku": "CK-7200-4", "description": "17 Pro Max - Onyx", "brand_new": 7, "non_pristine": 40, "damaged": 0, "founders": 0},
-  {"sku": "CK-7200-1", "description": "17 Pro Max - Smoke", "brand_new": 3, "non_pristine": 14, "damaged": 0, "founders": 0},
-  {"sku": "CA-1100", "description": "Pixel 9/9 Pro - Onyx", "brand_new": 1, "non_pristine": 25, "damaged": 0, "founders": 0},
-  {"sku": "CA-2200", "description": "Razr Ultra 60 - Onyx", "brand_new": 17, "non_pristine": 81, "damaged": 0, "founders": 0},
-  {"sku": "CA-2100", "description": "Razr 50 - Onyx", "brand_new": 9, "non_pristine": 43, "damaged": 0, "founders": 0},
-  {"sku": "CA-2102", "description": "Razr 50 - Electric", "brand_new": 7, "non_pristine": 16, "damaged": 0, "founders": 0}
+  {
+    "sku": "CK-4100",
+    "description": "14 Pro - BumbleBee",
+    "brand_new": 5,
+    "non_pristine": 13,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "811206030049"
+  },
+  {
+    "sku": "CK-4101",
+    "description": "14 Pro - London Sky",
+    "brand_new": 1,
+    "non_pristine": 20,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "811206030056"
+  },
+  {
+    "sku": "CK-4200",
+    "description": "14 Pro Max - BumbleBee",
+    "brand_new": 13,
+    "non_pristine": 2,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244442"
+  },
+  {
+    "sku": "CK-4201",
+    "description": "14 Pro Max - London Sky",
+    "brand_new": 5,
+    "non_pristine": 2,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244459"
+  },
+  {
+    "sku": "CK-5000-2",
+    "description": "15 - Royal Ink",
+    "brand_new": 15,
+    "non_pristine": 36,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244107"
+  },
+  {
+    "sku": "CK-5000-3",
+    "description": "15 - Miami Beach",
+    "brand_new": 11,
+    "non_pristine": 1,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244084"
+  },
+  {
+    "sku": "CK-5100-0",
+    "description": "15 Pro - BumbleBee",
+    "brand_new": 16,
+    "non_pristine": 3,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "811206030063"
+  },
+  {
+    "sku": "CK-5100-1",
+    "description": "15 Pro - London Sky",
+    "brand_new": 43,
+    "non_pristine": 72,
+    "damaged": 0,
+    "founders": 112,
+    "upc": "811206030070"
+  },
+  {
+    "sku": "CK-5100-2",
+    "description": "15 Pro - Royal Ink",
+    "brand_new": 22,
+    "non_pristine": 39,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244206"
+  },
+  {
+    "sku": "CK-5100-3",
+    "description": "15 Pro - Miami Beach",
+    "brand_new": 10,
+    "non_pristine": 2,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244008"
+  },
+  {
+    "sku": "CK-5400-2",
+    "description": "15 Plus - Royal Ink",
+    "brand_new": 3,
+    "non_pristine": 19,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244152"
+  },
+  {
+    "sku": "CK-5400-3",
+    "description": "15 Plus - Miami Beach",
+    "brand_new": 22,
+    "non_pristine": 9,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244138"
+  },
+  {
+    "sku": "CK-5200-0",
+    "description": "15 Pro Max - BumbleBee",
+    "brand_new": 5,
+    "non_pristine": 36,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "811206030087"
+  },
+  {
+    "sku": "CK-5200-1",
+    "description": "15 Pro Max - London Sky",
+    "brand_new": 22,
+    "non_pristine": 123,
+    "damaged": 0,
+    "founders": 88,
+    "upc": "811206030094"
+  },
+  {
+    "sku": "CK-5200-2",
+    "description": "15 Pro Max - Royal Ink",
+    "brand_new": 9,
+    "non_pristine": 36,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244251"
+  },
+  {
+    "sku": "CK-5200-3",
+    "description": "15 Pro Max - Miami Beach",
+    "brand_new": 54,
+    "non_pristine": 5,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244015"
+  },
+  {
+    "sku": "CK-5110-1",
+    "description": "15 Pro - London Sky - QWERTZ",
+    "brand_new": 13,
+    "non_pristine": 7,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244213"
+  },
+  {
+    "sku": "CK-5120-1",
+    "description": "15 Pro - London Sky - AZERTY",
+    "brand_new": 12,
+    "non_pristine": 1,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244220"
+  },
+  {
+    "sku": "CK-6000-4",
+    "description": "16 - Onyx",
+    "brand_new": 1,
+    "non_pristine": 26,
+    "damaged": 4,
+    "founders": 0,
+    "upc": "850063244466"
+  },
+  {
+    "sku": "CK-6100-4",
+    "description": "16 Pro - Onyx",
+    "brand_new": 5,
+    "non_pristine": 116,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244282"
+  },
+  {
+    "sku": "CK-6100-5",
+    "description": "16 Pro - Spice",
+    "brand_new": 0,
+    "non_pristine": 18,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244299"
+  },
+  {
+    "sku": "CK-6100-6",
+    "description": "16 Pro - Surf",
+    "brand_new": 8,
+    "non_pristine": 10,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244305"
+  },
+  {
+    "sku": "CK-6200-4",
+    "description": "16 Pro Max - Onyx",
+    "brand_new": 0,
+    "non_pristine": 78,
+    "damaged": 2,
+    "founders": 0,
+    "upc": "850063244367"
+  },
+  {
+    "sku": "CK-6200-5",
+    "description": "16 Pro Max - Spice",
+    "brand_new": 5,
+    "non_pristine": 32,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244374"
+  },
+  {
+    "sku": "CK-6200-6",
+    "description": "16 Pro Max - Surf",
+    "brand_new": 11,
+    "non_pristine": 40,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244381"
+  },
+  {
+    "sku": "CK-6400-4",
+    "description": "16 Plus - Onyx",
+    "brand_new": 11,
+    "non_pristine": 26,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244497"
+  },
+  {
+    "sku": "CK-7100-4",
+    "description": "17 Pro - Onyx",
+    "brand_new": 2,
+    "non_pristine": 42,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244800"
+  },
+  {
+    "sku": "CK-7100-1",
+    "description": "17 Pro - Smoke",
+    "brand_new": 2,
+    "non_pristine": 20,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244817"
+  },
+  {
+    "sku": "CK-7200-4",
+    "description": "17 Pro Max - Onyx",
+    "brand_new": 7,
+    "non_pristine": 40,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244824"
+  },
+  {
+    "sku": "CK-7200-1",
+    "description": "17 Pro Max - Smoke",
+    "brand_new": 3,
+    "non_pristine": 14,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244848"
+  },
+  {
+    "sku": "CA-1100",
+    "description": "Pixel 9/9 Pro - Onyx",
+    "brand_new": 1,
+    "non_pristine": 25,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244190"
+  },
+  {
+    "sku": "CA-2200",
+    "description": "Razr Ultra 60 - Onyx",
+    "brand_new": 17,
+    "non_pristine": 81,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244244"
+  },
+  {
+    "sku": "CA-2100",
+    "description": "Razr 50 - Onyx",
+    "brand_new": 9,
+    "non_pristine": 43,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244527"
+  },
+  {
+    "sku": "CA-2102",
+    "description": "Razr 50 - Electric",
+    "brand_new": 7,
+    "non_pristine": 16,
+    "damaged": 0,
+    "founders": 0,
+    "upc": "850063244534"
+  }
 ]

@@ -5046,6 +5046,40 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self._safe_write(html.encode())
 
+        elif self.path == '/api/sync-upcs':
+            # One-time bulk update: write UPCs to Supabase stock_items by SKU
+            UPC_MAP = {
+                "CA-1100-1":"850063244190","CA-1100":"850063244190",
+                "CA-2100":"850063244527","CA-2102":"850063244534","CA-2200":"850063244244",
+                "CK-4100":"811206030049","CK-4101":"811206030056",
+                "CK-4200":"850063244442","CK-4201":"850063244459",
+                "CK-5000-2":"850063244107","CK-5000-3":"850063244084",
+                "CK-5100-0":"811206030063","CK-5100-1":"811206030070",
+                "CK-5100-2":"850063244206","CK-5100-3":"850063244008",
+                "CK-5110-1":"850063244213","CK-5120-1":"850063244220",
+                "CK-5200-0":"811206030087","CK-5200-1":"811206030094",
+                "CK-5200-2":"850063244251","CK-5200-3":"850063244015",
+                "CK-5400-2":"850063244152","CK-5400-3":"850063244138",
+                "CK-6000-4":"850063244466","CK-6100-4":"850063244282",
+                "CK-6100-5":"850063244299","CK-6100-6":"850063244305",
+                "CK-6200-4":"850063244367","CK-6200-5":"850063244374",
+                "CK-6200-6":"850063244381","CK-6400-4":"850063244497",
+                "CK-7100-1":"850063244817","CK-7100-4":"850063244800",
+                "CK-7200-1":"850063244848","CK-7200-4":"850063244824",
+                "CP-0004":"850063244879","CL-000-1":"850063244855","CL-000-4":"850063244862",
+            }
+            updated = 0
+            for sku, upc in UPC_MAP.items():
+                result = supabase_request("stock_items", method="PATCH",
+                    params={"sku": f"eq.{sku}"},
+                    data={"upc": upc})
+                if result is not None:
+                    updated += 1
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self._safe_write(json.dumps({"ok": True, "updated": updated, "total": len(UPC_MAP)}).encode())
+
         elif self.path == '/api/activity-log':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
