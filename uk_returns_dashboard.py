@@ -474,37 +474,8 @@ TRACKING_CACHE_TTL = 600  # 10 minutes
 _registered_17track = set()  # tracking numbers already registered with 17track
 
 
-# Carrier code hints for 17track (from https://res.17track.net/asset/carrier/info/apicarrier.all.json)
-# International postal format: 2 letters + 9 digits + 2-letter country code
-CARRIER_HINTS_17TRACK = [
-    (r'^[A-Z]{2}\d{9}GB$', 11031),                  # Royal Mail (UK) — NOT 3011 which is China Post!
-    (r'^[A-Z]{2}\d{9}BE$', 4031),                   # Bpost (Belgium)
-    (r'^[A-Z]{2}\d{9}DE$', 3023),                   # Deutsche Post (Germany)
-    (r'^[A-Z]{2}\d{9}FR$', 3016),                   # La Poste (France)
-    (r'^[A-Z]{2}\d{9}NL$', 3028),                   # PostNL (Netherlands)
-    (r'^[A-Z]{2}\d{9}US$', 21051),                  # USPS (USA)
-    (r'^[A-Z]{2}\d{9}CN$', 3011),                   # China Post
-    (r'^[A-Z]{2}\d{9}IT$', 3041),                   # Poste Italiane (Italy)
-    (r'^[A-Z]{2}\d{9}ES$', 3042),                   # Correos (Spain)
-    (r'^[A-Z]{2}\d{9}IE$', 190482),                 # An Post (Ireland)
-    (r'^[A-Z]{2}\s*\d{4}\s*\d{4}\s*\d\s*GB$', 11031),  # Royal Mail spaced
-    (r'^H[A-Z0-9]{10,20}$', 190143),                # Evri (Hermes UK)
-    (r'^\d{14}$', 100010),                           # DPD UK
-    (r'^1Z[A-Z0-9]{16}$', 100002),                   # UPS
-    (r'^\d{10}$', 7021),                             # DHL Express
-    (r'^JD\d{18}$', 7021),                           # DHL eCommerce
-    (r'^TBA\d{10,}$', 190238),                       # Amazon Logistics
-    (r'^GLS\d{9,}$', 3049),                          # GLS
-]
-
-
-def _detect_carrier_17track(tracking_number):
-    """Try to detect 17track carrier code from tracking number format."""
-    clean = tracking_number.replace(" ", "").upper()
-    for pattern, code in CARRIER_HINTS_17TRACK:
-        if re.match(pattern, clean):
-            return code
-    return None  # let 17track auto-detect
+# Let 17track auto-detect carriers — they support 3400+ carriers and do it better
+# than manual regex guessing which caused misidentification issues
 
 
 def track_shipment(tracking_number):
@@ -567,9 +538,7 @@ def _track_via_17track(tracking_number):
         needs_wait = False
         if tracking_number not in _registered_17track:
             reg_payload = [{"number": tracking_number}]
-            carrier = _detect_carrier_17track(tracking_number)
-            if carrier:
-                reg_payload[0]["carrier"] = carrier
+            # Let 17track auto-detect the carrier (3400+ supported)
 
             req = urllib.request.Request(
                 "https://api.17track.net/track/v2.2/register",
@@ -606,9 +575,6 @@ def _track_via_17track(tracking_number):
 
         # Step 2: Get tracking info (free, unlimited)
         query_payload = [{"number": tracking_number}]
-        carrier = _detect_carrier_17track(tracking_number)
-        if carrier:
-            query_payload[0]["carrier"] = carrier
 
         req2 = urllib.request.Request(
             "https://api.17track.net/track/v2.2/gettrackinfo",
