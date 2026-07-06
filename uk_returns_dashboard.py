@@ -2318,7 +2318,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .process-open { background: rgba(34,197,94,0.15); color: var(--green); }
   .process-closed { background: rgba(225,112,85,0.15); color: var(--red); }
+  .process-expired { background: rgba(116,185,255,0.15); color: var(--blue); }
   .process-unknown { background: rgba(136,136,136,0.15); color: var(--text-dim); }
+  .expired-link { cursor: pointer; text-decoration: none; font-size: 14px; margin-left: 4px; vertical-align: middle; }
   .order-num { font-family: monospace; font-weight: 600; color: var(--accent-light); }
   .add-tracking-row {
     display: flex;
@@ -3620,14 +3622,22 @@ function filterTickets() {
       <div class="ticket-customer">${esc(t.customer_name)}</div>
       <div class="ticket-date">${formatDate(t.updated)}</div>
       <div><span class="status-badge status-${t.status}">${t.status}</span></div>
-      <div><span class="process-badge ${getProcessStatus(t, 'uk return')}">${getProcessLabel(t, 'uk return')}</span></div>
+      <div><span class="process-badge ${getProcessStatus(t, 'uk return')}">${getProcessLabel(t, 'uk return')}</span>${getProcessStatus(t, 'uk return')==='process-expired' ? `<a class="expired-link" onclick="event.stopPropagation()" href="${t.gorgias_url||'#'}" target="_blank" title="No update in 30+ days — open in Gorgias">&#9888;&#65039;</a>` : ''}</div>
     </div>
   `).join('');
+}
+
+function isExpired(t) {
+  if (!t.updated) return false;
+  const updated = new Date(t.updated);
+  const now = new Date();
+  return (now - updated) / (1000*60*60*24) > 30;
 }
 
 function getProcessStatus(t, tagFilter) {
   const tags = (t.tags || []).map(tag => tag.toLowerCase());
   if (tags.includes('return processed')) return 'process-closed';
+  if (tagFilter === 'uk return' && !tags.includes('return processed') && isExpired(t)) return 'process-expired';
   if (tags.includes(tagFilter)) return 'process-open';
   return 'process-unknown';
 }
@@ -3635,6 +3645,7 @@ function getProcessStatus(t, tagFilter) {
 function getProcessLabel(t, tagFilter) {
   const tags = (t.tags || []).map(tag => tag.toLowerCase());
   if (tags.includes('return processed')) return 'Closed';
+  if (tagFilter === 'uk return' && !tags.includes('return processed') && isExpired(t)) return 'Expired';
   if (tags.includes(tagFilter)) return 'Open';
   return '-';
 }
@@ -4530,6 +4541,46 @@ function printWarrantyLabel(ticketId) {
   w.document.close();
 }
 
+async function togglePrepaidLabel(ticketId, checked) {
+  const statusEl = document.getElementById('prepaidStatus-' + ticketId);
+  statusEl.textContent = checked ? 'Yes' : 'No';
+  try {
+    const noteText = checked ? 'Prepaid return label has been sent to customer.' : 'Prepaid return label marked as not sent.';
+    await fetch('/api/internal-note', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ticket_id: ticketId, note: noteText})
+    });
+  } catch (e) { console.error('Prepaid label toggle error:', e); }
+}
+
+async function uploadPrepaidLabel(ticketId, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const status = document.getElementById('prepaidUploadStatus-' + ticketId);
+  const preview = document.getElementById('prepaidPreview-' + ticketId);
+  status.textContent = 'Uploading...';
+
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    preview.innerHTML = '<img src="' + e.target.result + '" style="max-width:200px;border-radius:6px;border:1px solid var(--border)">';
+    try {
+      const resp = await fetch('/api/upload-image-note', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ticket_id: ticketId, image_data: e.target.result, filename: file.name, note: 'Prepaid return label uploaded.'})
+      });
+      const data = await resp.json();
+      status.textContent = data.ok ? 'Label uploaded & posted to ticket' : 'Upload failed';
+      status.style.color = data.ok ? 'var(--green)' : 'var(--red)';
+    } catch (err) {
+      status.textContent = 'Upload failed: ' + err.message;
+      status.style.color = 'var(--red)';
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
 function openWarrantyDetail(id) {
   const t = warrantyTickets.find(x => x.id === id);
   if (!t) return;
@@ -4636,6 +4687,25 @@ function openWarrantyDetail(id) {
     <div class="detail-section">
       <h3>Reported Issue</h3>
       <div class="tag-list">${issuesHtml}</div>
+    </div>
+
+    <div class="detail-section" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-top:8px">
+      <h3 style="margin-bottom:10px">&#128230; Prepaid Label</h3>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+        <span style="font-size:13px;color:var(--text-dim)">Provided?</span>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="prepaidCheck-${t.id}" onchange="togglePrepaidLabel(${t.id}, this.checked)" style="accent-color:var(--accent);width:18px;height:18px" ${(t.tags||[]).some(tag => tag.toLowerCase()==='prepaid label sent') ? 'checked' : ''}>
+          <span style="font-size:13px;color:var(--text)" id="prepaidStatus-${t.id}">${(t.tags||[]).some(tag => tag.toLowerCase()==='prepaid label sent') ? 'Yes' : 'No'}</span>
+        </label>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <label style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--accent);color:#fff;border-radius:6px;cursor:pointer;font-size:12px">
+          &#128247; Upload Label Image
+          <input type="file" accept="image/*" onchange="uploadPrepaidLabel(${t.id}, this)" style="display:none">
+        </label>
+        <span id="prepaidUploadStatus-${t.id}" style="font-size:12px;color:var(--text-dim)"></span>
+      </div>
+      <div id="prepaidPreview-${t.id}" style="margin-top:8px"></div>
     </div>
 
     <div class="detail-section">
