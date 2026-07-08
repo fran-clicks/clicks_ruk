@@ -1086,16 +1086,18 @@ WARRANTY_TAG_FILTERS = ["uk warranty", "uk green warranty"]
 
 
 def fetch_all_warranty_tickets():
-    """Fetch tickets with 'UK Warranty' or 'UK Green Warranty' tags."""
+    """Fetch tickets with 'UK Warranty' or 'UK Green Warranty' tags (parallel)."""
     all_tickets = []
     seen_ids = set()
-    for tag_filter in WARRANTY_TAG_FILTERS:
-        result = _fetch_tickets_by_tag(tag_filter)
-        for t in result.get("tickets", []):
-            tid = t.get("id")
-            if tid and tid not in seen_ids:
-                seen_ids.add(tid)
-                all_tickets.append(t)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {executor.submit(_fetch_tickets_by_tag, tag): tag for tag in WARRANTY_TAG_FILTERS}
+        for future in futures:
+            result = future.result()
+            for t in result.get("tickets", []):
+                tid = t.get("id")
+                if tid and tid not in seen_ids:
+                    seen_ids.add(tid)
+                    all_tickets.append(t)
     return {"tickets": all_tickets}
 
 
@@ -1894,7 +1896,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Login — Clicks UK Returns</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231F3864'/%3E%3Ctext x='16' y='23' font-family='Arial' font-size='22' font-weight='bold' fill='white' text-anchor='middle'%3EC%3C/text%3E%3C/svg%3E">
+<link rel="icon" type="image/svg+xml" href="https://cdn.prod.website-files.com/66f575e72f06b9820f448d43/66fbda43f42a9d6f770bbae4_clicks-logo.svg">
 <style>
   :root {
     --bg: #000000;
@@ -2022,7 +2024,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Clicks UK Returns Dashboard</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231F3864'/%3E%3Ctext x='16' y='23' font-family='Arial' font-size='22' font-weight='bold' fill='white' text-anchor='middle'%3EC%3C/text%3E%3C/svg%3E">
+<link rel="icon" type="image/svg+xml" href="https://cdn.prod.website-files.com/66f575e72f06b9820f448d43/66fbda43f42a9d6f770bbae4_clicks-logo.svg">
 <style>
   :root {
     --bg: #000000;
@@ -2177,16 +2179,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   /* Activity log */
   .activity-log-section { margin-top: 20px; }
-  .activity-log { max-height: 300px; overflow-y: auto; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; }
+  .activity-log { max-height: 320px; overflow-y: auto; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; }
   .activity-entry {
-    display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px;
-    border-bottom: 1px solid var(--border); font-size: 13px;
+    display: flex; align-items: center; gap: 12px; padding: 9px 16px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); font-size: 13px;
+    transition: background 0.15s;
   }
+  .activity-entry:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
   .activity-entry:last-child { border-bottom: none; }
-  .activity-time { color: var(--text-dim); font-size: 11px; min-width: 120px; white-space: nowrap; }
-  .activity-user { color: var(--accent-light); font-weight: 600; min-width: 70px; }
-  .activity-action { color: var(--text); }
-  .activity-details { color: var(--text-dim); margin-left: 4px; }
+  .activity-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; opacity: 0.6; }
+  .activity-time { color: var(--text-dim); font-size: 11px; min-width: 100px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .activity-user { color: var(--accent-light); font-weight: 600; min-width: 75px; font-size: 12px; text-transform: capitalize; }
+  .activity-action { color: var(--text); flex: 1; }
+  .activity-details { color: var(--text-dim); margin-left: 4px; font-size: 12px; }
 
   /* Stock tab */
   .stock-summary {
@@ -4916,12 +4921,14 @@ async function loadActivityLog() {
     const log = data.log || [];
 
     const stockActions = ['Added stock item', 'Updated stock item', 'Deleted stock item'];
-    const returnsLog = log.filter(e => !stockActions.includes(e.action));
+    const warrantyActions = ['Added warranty ticket', 'Removed warranty ticket', 'Changed warranty progress'];
+    const returnsLog = log.filter(e => !stockActions.includes(e.action) && !warrantyActions.includes(e.action));
     const stockLog = log.filter(e => stockActions.includes(e.action));
+    const warrantyLog = log.filter(e => warrantyActions.includes(e.action));
 
     renderActivityEntries('activityLogReturns', returnsLog.slice(0, 30));
     renderActivityEntries('activityLogStock', stockLog.slice(0, 30));
-    renderActivityEntries('activityLogWarranties', returnsLog.slice(0, 30));
+    renderActivityEntries('activityLogWarranties', warrantyLog.slice(0, 30));
   } catch(e) {}
 }
 
@@ -4937,6 +4944,7 @@ function renderActivityEntries(containerId, entries) {
     const time = d.toLocaleDateString('en-GB', {day:'2-digit',month:'short'}) + ' ' +
                  d.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'});
     return `<div class="activity-entry">
+      <span class="activity-dot"></span>
       <span class="activity-time">${esc(time)}</span>
       <span class="activity-user">${esc(e.user)}</span>
       <span class="activity-action">${esc(e.action)}<span class="activity-details">${e.details ? ' — ' + esc(e.details) : ''}</span></span>
